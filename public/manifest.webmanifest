@@ -1,0 +1,22 @@
+{
+  "name": "PICKS HQ",
+  "short_name": "PICKS HQ",
+  "description": "Your group's picks, live.",
+  "start_url": "/board",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0b0c12",
+  "theme_color": "#0b0c12",
+  "icons": [
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icons/maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ],
+  "shortcuts": [
+    { "name": "Live", "url": "/live" },
+    { "name": "The Board", "url": "/board" },
+    { "name": "News & health", "url": "/news" }
+  ]
+}

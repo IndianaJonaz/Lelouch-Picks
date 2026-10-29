@@ -1,0 +1,76 @@
+import { test, after } from 'node:test';
+import assert from 'node:assert/strict';
+import type { AddressInfo } from 'node:net';
+import { Auth } from '../src/auth.ts';
+import { Resolver } from '../src/resolve.ts';
+import { createServer } from '../src/server.ts';
+import { fx, makeCtx } from './helpers.ts';
+
+const { ctx, espn, db } = makeCtx({ 'nba/injuries': { injuries: [] }, 'nba/scoreboard': fx('nba_scoreboard_final'), 'nfl/scoreboard': { events: [] }, 'nhl/scoreboard': new Error('HTTP 500') });
+const auth = new Auth(db, 'test-secret', 'America/Chicago');
+const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'PICKS HQ' });
+await new Promise<void>((r) => server.listen(0, r));
+const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+after(() => server.close());
+
+const post = (p: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+
+test('auth: daily key is deterministic, rotation invalidates the old key', () => {
+  const k = auth.keyFor('2026-10-29', 0);
+  assert.match(k, /^PHQ-[A-Z2-9]{4}-[A-Z2-9]{4}$/);
+  assert.equal(auth.keyFor('2026-10-29', 0), k);
+  assert.notEqual(auth.keyFor('2026-10-30', 0), k);
+  const a2 = new Auth(db, 'test-secret', 'America/Chicago');
+  const today = a2.keyFor();
+  assert.ok(a2.checkKey(today)); assert.ok(a2.checkKey(today.toLowerCase().replace(/-/g, ' ')));
+  const next = a2.rotate();
+  assert.notEqual(next, today); assert.ok(!a2.checkKey(today)); assert.ok(a2.checkKey(next));
+});
+
+test('static shell, manifest and security headers', async () => {
+  const r = await fetch(base + '/', { headers: { 'accept-encoding': 'br' } });
+  assert.equal(r.status, 200);
+  assert.match(r.headers.get('content-security-policy')!, /script-src 'self'/);
+  assert.match(await r.text(), /manifest\.webmanifest/);
+  const m = await (await fetch(base + '/manifest.webmanifest')).json();
+  assert.equal(m.display, 'standalone');
+  assert.equal((await fetch(base + '/board')).status, 200);
+  assert.equal((await fetch(base + '/healthz')).status, 200);
+});
+
+test('API requires sign-in; wrong key rejected; right key sets HttpOnly cookie; remember => Max-Age', async () => {
+  assert.equal((await fetch(base + '/api/board')).status, 401);
+  assert.equal((await post('/api/login', { key: 'PHQ-NOPE-NOPE' })).status, 401);
+  const ok = await post('/api/login', { key: auth.keyFor(), remember: true });
+  assert.equal(ok.status, 200);
+  const c = ok.headers.get('set-cookie')!;
+  assert.match(c, /HttpOnly/); assert.match(c, /Max-Age=2592000/);
+  const sess = await post('/api/login', { key: auth.keyFor(), remember: false });
+  assert.doesNotMatch(sess.headers.get('set-cookie')!, /Max-Age/);
+  const cookie = c.split(';')[0];
+  for (const p of ['/api/board', '/api/live?all=1', '/api/news', '/api/health']) {
+    const r = await fetch(base + p, { headers: { cookie } });
+    assert.equal(r.status, 200, p);
+  }
+  const live = await (await fetch(base + '/api/live?all=1', { headers: { cookie } })).json();
+  assert.deepEqual(live.slateErrors.map((e: any) => e.league), ['nhl']); // down feed surfaces as an error, not empty data
+  await post('/api/logout', {}, { cookie });
+  assert.equal((await fetch(base + '/api/board', { headers: { cookie } })).status, 401);
+});
+
+test('admin API: bearer token required; pick entry errors are readable', async () => {
+  assert.equal((await post('/api/admin/slips', { text: 'ATL ML', odds: -110 })).status, 401);
+  const bad = await post('/api/admin/slips', { text: 'MIA ML' , odds: -110 }, { authorization: 'Bearer admintok' });
+  assert.equal(bad.status, 400); // the only fixture game is final -> no upcoming game
+  assert.match((await bad.json()).error, /No upcoming/);
+});
+
+test('login is rate limited per IP', async () => {
+  let last = 0;
+  for (let i = 0; i < 12; i++) last = (await post('/api/login', { key: 'x' }, { 'x-forwarded-for': '9.9.9.9' })).status;
+  assert.equal(last, 429);
+});
+
+test('successful logins do not count toward the limit', async () => {
+  for (let i = 0; i < 15; i++) assert.equal((await post('/api/login', { key: auth.keyFor() }, { 'x-forwarded-for': '7.7.7.7' })).status, 200);
+});

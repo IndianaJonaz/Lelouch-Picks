@@ -1,0 +1,8 @@
+node_modules
+data
+logs
+screenshots
+test
+scripts
+.env
+*.md

@@ -1,0 +1,26 @@
+{
+  "name": "picks-hq",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PICKS HQ — group sports-picks Discord bot + live web dashboard",
+  "type": "module",
+  "engines": { "node": ">=22.18" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/main.ts",
+    "dev": "node --disable-warning=ExperimentalWarning --watch src/main.ts",
+    "demo": "DEMO_MODE=1 node --disable-warning=ExperimentalWarning src/main.ts",
+    "test": "NODE_ENV=test node --disable-warning=ExperimentalWarning --test \"test/*.test.ts\"",
+    "key": "node --disable-warning=ExperimentalWarning src/cli.ts",
+    "register-commands": "node --disable-warning=ExperimentalWarning src/cli.ts register",
+    "typecheck": "tsc --noEmit",
+    "screenshots": "node scripts/screenshots.mjs"
+  },
+  "dependencies": {
+    "discord.js": "^14.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "playwright-core": "^1.48.0",
+    "typescript": "^5.6.0"
+  }
+}
