@@ -5,13 +5,14 @@ import { Auth } from '../src/auth.ts';
 import { Resolver } from '../src/resolve.ts';
 import { createServer } from '../src/server.ts';
 import { fx, makeCtx } from './helpers.ts';
+import { leaderboard } from '../src/views.ts';
 
 const { ctx, espn, db } = makeCtx({ 'nba/injuries': { injuries: [] }, 'nba/scoreboard': fx('nba_scoreboard_final'), 'nfl/scoreboard': { events: [] }, 'nhl/scoreboard': new Error('HTTP 500') });
 const auth = new Auth(db, 'test-secret', 'America/Chicago');
 const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'PICKS HQ' });
 await new Promise<void>((r) => server.listen(0, r));
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-after(() => server.close());
+after(() => { server.close(); ctx.engine.stop(); });
 
 const post = (p: string, body: unknown, headers: Record<string, string> = {}) => fetch(base + p, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
 
@@ -63,6 +64,18 @@ test('admin API: bearer token required; pick entry errors are readable', async (
   const bad = await post('/api/admin/slips', { text: 'MIA ML' , odds: -110 }, { authorization: 'Bearer admintok' });
   assert.equal(bad.status, 400); // the only fixture game is final -> no upcoming game
   assert.match((await bad.json()).error, /No upcoming/);
+});
+
+test('admin API: import a finished slip by date with a manual result', async () => {
+  const h = { authorization: 'Bearer admintok' };
+  assert.equal((await post('/api/admin/slips', { text: 'MIA ML', odds: -110, date: '10/28/2026' }, h)).status, 400);
+  assert.equal((await post('/api/admin/slips', { text: 'MIA ML', odds: -110, date: '2026-10-28', result: { status: 'cashed', profit: 1 } }, h)).status, 400);
+  const r = await post('/api/admin/slips', { user: 'Imp', text: 'MIA ML', stake: 55, odds: 500, date: '2026-10-28', result: { status: 'won', profit: 275 } }, h);
+  assert.equal(r.status, 201);
+  const s = await r.json();
+  assert.equal(s.status, 'won'); assert.equal(s.profit, 275);
+  const row = leaderboard(ctx, 'all').find((u) => u.user === 'Imp')!;
+  assert.equal(row.w, 1); assert.equal(row.l, 0); assert.equal(row.profit, 275);
 });
 
 test('login is rate limited per IP', async () => {

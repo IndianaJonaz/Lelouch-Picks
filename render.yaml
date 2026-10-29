@@ -7,7 +7,7 @@ services:
     healthCheckPath: /healthz
     envVars:
       - key: DEMO_MODE
-        value: "1"
+        value: "0"
       - key: NODE_ENV
         value: production
       - key: DATABASE_PATH

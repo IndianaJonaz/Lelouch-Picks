@@ -10,6 +10,7 @@ import type { Resolver } from './resolve.ts';
 import { createSlip, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
 import { boardView, healthView, liveView, newsView, slipView, type Ctx } from './views.ts';
 import { dayInTz } from './util.ts';
+import type { SlipStatus } from './db.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -153,8 +154,14 @@ export function createServer(deps: ServerDeps) {
           const b = await body(req);
           const legs = [];
           const texts = Array.isArray(b.legs) ? b.legs : String(b.text ?? '').split(/\r?\n|;|\|/).map((s: string) => s.trim()).filter(Boolean);
-          for (const t of texts) legs.push(await deps.resolver.resolve(String(t), { tz: ctx.tz, leagues: ctx.leagues }));
+          // Optional `date` (YYYY-MM-DD) imports a slip on games from that day, including finished ones.
+          if (b.date != null && !/^\d{4}-\d{2}-\d{2}$/.test(String(b.date))) throw new SlipError('date must be YYYY-MM-DD.');
+          const result = b.result == null ? null : { status: String(b.result.status), profit: Number(b.result.profit) };
+          if (result && (!['won', 'lost', 'push', 'void'].includes(result.status) || !Number.isFinite(result.profit))) throw new SlipError('result needs status won|lost|push|void and a numeric profit.');
+          const ro = { tz: ctx.tz, leagues: ctx.leagues, ...(b.date ? { days: [String(b.date)], allowFinal: true } : {}) };
+          for (const t of texts) legs.push(await deps.resolver.resolve(String(t), ro));
           const slip = createSlip(ctx.db, { user_id: String(b.userId ?? b.user ?? 'api'), user_name: String(b.user ?? 'api'), title: b.title ?? null, stake: Number(b.stake ?? 1), odds: b.odds == null || b.odds === '' ? null : Number(b.odds), hidden: !!b.hidden, note: b.note ?? null, source: 'api' }, legs);
+          if (result) manualSettle(ctx.db, slip.id, result.status as SlipStatus, result.profit);
           deps.onSlipCreated?.(); ctx.engine.poke();
           const full = slipWithLegs(ctx.db, slip.id)!;
           return send(req, res, 201, slipView(full.slip, full.legs, ctx));
