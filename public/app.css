@@ -16,7 +16,7 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 .num{font-variant-numeric:tabular-nums}
 .muted{color:var(--tx2)}.dim{color:var(--tx3)}
 .boot{display:grid;place-items:center;height:100dvh}
-.logo-mark{width:28px;height:28px;border-radius:8px;background:url(/icons/icon.svg) center/cover;box-shadow:0 0 0 1px rgba(212,175,55,.35),0 0 14px -2px rgba(200,16,46,.55)}
+.logo-mark{width:28px;height:28px;border-radius:8px;background:url(/icons/icon.svg?v=geass2) center/cover;box-shadow:0 0 0 1px rgba(212,175,55,.35),0 0 14px -2px rgba(200,16,46,.55)}
 .logo-mark.big{width:64px;height:64px;border-radius:18px;animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{50%{opacity:.5;transform:scale(.96)}}
 
