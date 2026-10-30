@@ -70,13 +70,18 @@ curl $URL/api/admin/key -H "authorization: Bearer $ADMIN_TOKEN"
 | `GROUP_NAME` | | `PICKS HQ` | Shown in bot embeds. |
 | `DEMO_MODE` | | `0` | `1` seeds the labelled demo data and writes the key file. |
 | `POLL_LIVE_MS` / `POLL_IDLE_MS` | | `15000` / `60000` | Grading engine poll intervals. |
+| `XAI_API_KEY` | for screenshots | | Turns on reading slip screenshots posted in Discord (xAI vision). Unset = feature off. |
+| `XAI_MODEL` | | `grok-4.3` | Any vision-capable xAI model. |
+| `DISCORD_STAFF_CHANNEL_IDS` | | | Staff channel IDs. Screenshots confirmed there are marked **test** and left out of standings. |
+| `DISCORD_SLIP_CHANNEL_IDS` | | | Comma-separated channel IDs to read screenshots in (threads under them count). Blank = any channel the bot can see. |
 
 ## Create the Discord bot and invite it
 
 1. Go to <https://discord.com/developers/applications>, click **New Application**, and name it.
 2. Copy the **Application ID** from **General Information** into `DISCORD_APP_ID`.
 3. Under **Bot**, click **Reset Token** and put the token in `DISCORD_BOT_TOKEN`. Never commit it. No privileged
-   intents are needed, because the bot uses slash commands only (the `Guilds` intent).
+   intents are needed for slash commands. **Slip screenshots** (`XAI_API_KEY` set) also need **Bot → Privileged Gateway
+   Intents → Message Content Intent** turned on; if it's off, the bot logs a warning and runs without screenshots.
 4. Under **OAuth2 → URL Generator**, tick the scopes **`bot`** and **`applications.commands`**, and the bot permissions
    **View Channels, Send Messages, Embed Links, Read Message History**. Open the generated URL and pick your server.
    The URL looks like this:
@@ -124,6 +129,35 @@ public/         index.html, app.js, app.css, sw.js, manifest, icons
 test/           node:test suites + trimmed real ESPN fixtures
 scripts/        screenshots.mjs, icons.mjs (playwright-core + Chrome)
 ```
+
+## Slip screenshots
+
+With `XAI_API_KEY` set, post a slip screenshot (PNG/JPG) in a watched channel. PrizePicks is read first; Underdog,
+FanDuel, DraftKings, Sleeper and Kalshi are recognised too. Other layouts are read at low confidence and flagged. Dark
+mode, tight crops and several slips in one image are fine. iPhone HEIC photos get a reply asking for a PNG or JPG.
+
+1. **Read.** xAI vision returns strict JSON with per-leg confidence. If the first pass misses legs (fewer than the
+   header's pick count, no stake, no line), the bot does **one** focused re-read and keeps the better result.
+2. **Confirm card.** Nothing is logged automatically. Each slip gets a card with **Confirm / Edit / Cancel**. Blanks
+   (⬜) and unsure legs (⚠️) are marked. A line that can't be read is left blank, never guessed, and Confirm stays off
+   until it's filled in through **Edit**. A failed read still gets a blank card. Only the poster or an admin can
+   confirm, edit or cancel. Cards expire after 48 h.
+3. **Log.** Uses the same path as the admin import. Settled slips: legs are matched to the finished ESPN games (the
+   printed scores pick the right night), graded from the box score, then the slip result is applied (won → payout −
+   stake, lost → −stake, push/void → 0; an all push/void slip is never a win). If the result contradicts the legs
+   (for example "won" with a miss on a power play), the slip is parked as **needs review** instead of showing a
+   contradiction. Legs ESPN doesn't cover (esports, Kalshi markets) keep the screenshot's result. Open slips grade
+   live. Legs stay in printed order, and odds are kept as printed (Kalshi as `YES 40¢ × 25`).
+4. **Ticket.** The card is replaced by a ticket embed showing the book and play type, `risk → pays`, sports, `n/N HIT`,
+   status, a row per leg and "logged by", plus **❌ Delete (misread)**. The dashboard has the same ticket at
+   `/slip/<id>`.
+
+The image is never stored, only its hash (for dedupe) and the Discord message link. That link is not on the public
+board; it's returned only by `GET /api/admin/slips/:id`. The same slip can't be added twice (image hash plus content
+hash per member). Screenshots in `DISCORD_STAFF_CHANNEL_IDS` become **test** slips that are left out of standings.
+
+Admin import (same path): `POST /api/admin/slips` with `{user, userId?, text, stake, odds?, date?, result?: {status, profit}}`;
+`GET /api/admin/slips/:id` (includes the screenshot link) and `DELETE /api/admin/slips/:id`.
 
 ## Accuracy notes and limits
 

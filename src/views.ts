@@ -7,18 +7,50 @@ import type { Engine } from './engine.ts';
 import { paceFor, toWin } from './grading.ts';
 import { statLabel } from './stats.ts';
 import { isPublic } from './store.ts';
-import { addDays, dayInTz, fmtOdds, normName, round2 } from './util.ts';
+import { addDays, americanToDecimal, dayInTz, fmtOdds, normName, round2 } from './util.ts';
 
 export interface Ctx { db: DatabaseSync; espn: Espn; engine: Engine; tz: string; leagues: string[]; demo: boolean; bot: () => { status: string; detail: string | null; tag: string | null } }
 
 export function legText(l: Pick<Leg, 'type' | 'player' | 'team' | 'side' | 'line' | 'stat' | 'league' | 'event_name'>): string {
   const sideTxt = l.side === 'over' ? 'o' : 'u';
   switch (l.type) {
-    case 'prop': return l.line === 0.5 && l.side === 'over' && ['td', 'goals', 'hr'].includes(l.stat ?? '') ? `${l.player} ${l.stat === 'td' ? 'anytime TD' : l.stat === 'hr' ? 'to homer' : 'to score'}` : `${l.player} ${sideTxt}${l.line} ${statLabel(l.league, l.stat)}`;
+    case 'prop': if (l.line == null || !l.side) return `${l.player ?? '?'} ${statLabel(l.league, l.stat)}`.trim();
+      return l.line === 0.5 && l.side === 'over' && ['td', 'goals', 'hr'].includes(l.stat ?? '') ? `${l.player} ${l.stat === 'td' ? 'anytime TD' : l.stat === 'hr' ? 'to homer' : 'to score'}` : `${l.player} ${sideTxt}${l.line} ${statLabel(l.league, l.stat)}`;
     case 'spread': return `${l.team} ${l.line === 0 ? 'PK' : (l.line! > 0 ? '+' : '') + l.line}`;
     case 'total': return `${l.event_name ?? ''} ${sideTxt}${l.line}`.trim();
     case 'ml': return `${l.team} ML`;
   }
+}
+
+const LEG_WORD: Record<string, string> = { pending: 'waiting', won: 'hit', lost: 'miss', push: 'push', void: 'void', review: 'check' };
+export function headshot(l: Pick<Leg, 'league' | 'athlete_id'>): string | null {
+  const sport = LEAGUES[l.league]?.sport;
+  if (!l.athlete_id || !sport) return null;
+  const path = l.league === 'nfl' ? 'nfl' : l.league === 'nhl' ? 'nhl' : l.league === 'mlb' ? 'mlb' : l.league === 'wnba' ? 'wnba' : l.league === 'nba' ? 'nba' : null;
+  return path ? `https://a.espncdn.com/i/headshots/${path}/players/full/${l.athlete_id}.png` : null;
+}
+/** "Player over 20.5 Points" — the ticket row text. */
+export function ticketLegText(l: Pick<Leg, 'type' | 'player' | 'team' | 'side' | 'line' | 'stat' | 'league' | 'event_name'>): string {
+  if (l.type === 'prop' && l.player && l.side && l.line != null) return `${l.player} ${l.side} ${l.line} ${statLabel(l.league, l.stat)}`.trim();
+  return legText(l);
+}
+/** Ticket summary. Status line, hit count and net all come from the same rows, so they can't contradict each other. */
+export function ticket(slip: Slip, legs: Leg[]) {
+  const hits = legs.filter((l) => l.status === 'won').length;
+  const graded = legs.filter((l) => l.status !== 'pending').length;
+  const settled = ['won', 'lost', 'push', 'void'].includes(slip.status);
+  const pays = slip.status === 'won' && slip.profit != null ? round2(slip.stake + slip.profit)
+    : slip.status === 'open' || slip.status === 'review' ? slip.payout ?? (slip.odds != null ? round2(slip.stake * americanToDecimal(slip.odds)) : null)
+    : slip.status === 'lost' ? 0 : slip.stake;
+  const statusLine = slip.status === 'open' ? 'OPEN' : slip.status === 'review' ? 'NEEDS REVIEW'
+    : `SETTLED · ${slip.status === 'won' ? 'CASHED' : slip.status === 'lost' ? 'LOST' : slip.status === 'push' ? 'PUSH · STAKE BACK' : 'VOID · STAKE BACK'}`;
+  const pt = (slip.play_type ?? '').toLowerCase();
+  return {
+    book: slip.book, playType: slip.play_type, playBadge: pt.includes('flex') ? 'FLEX' : pt.includes('power') ? 'POWER PLAY' : slip.play_type ? slip.play_type.toUpperCase() : null,
+    sports: [...new Set(legs.map((l) => LEAGUES[l.league]?.label ?? l.league.toUpperCase()))],
+    legCount: legs.length, hits, graded, risk: slip.stake, pays, net: settled ? slip.profit : null,
+    statusLine, oddsAsLogged: slip.odds_text ?? (slip.odds != null ? fmtOdds(slip.odds) : null), isTest: !!slip.is_test,
+  };
 }
 
 function publicLeg(l: Leg, ctx: Ctx) {
@@ -27,7 +59,7 @@ function publicLeg(l: Leg, ctx: Ctx) {
   return {
     id: l.id, league: l.league, leagueLabel: LEAGUES[l.league]?.label ?? l.league, type: l.type, text: legText(l), raw: l.raw,
     player: l.player, team: l.team, stat: l.stat, statLabel: statLabel(l.league, l.stat), side: l.side, line: l.line, odds: l.odds, oddsText: fmtOdds(l.odds),
-    status: l.status, actual: l.actual, detail: l.detail,
+    status: l.status, statusWord: LEG_WORD[l.status] ?? l.status, actual: l.actual, detail: l.detail, ticketText: ticketLegText(l), headshot: headshot(l),
     event: l.event_id ? { id: l.event_id, name: l.event_name, start: l.start_time, state: snap?.game.state ?? null, detail: snap?.game.detail ?? null } : null,
     pace,
   };
@@ -37,14 +69,14 @@ export function slipView(slip: Slip, legs: Leg[], ctx: Ctx) {
   const pub = isPublic(slip);
   const base = {
     id: slip.id, user: slip.user_name, userId: slip.user_id, title: slip.title, stake: slip.stake, status: slip.status, profit: slip.profit,
-    createdAt: slip.created_at, settledAt: slip.settled_at, demo: !!slip.is_demo, hidden: !pub, wasHidden: !!slip.hidden,
+    createdAt: slip.created_at, settledAt: slip.settled_at, demo: !!slip.is_demo, test: !!slip.is_test, hidden: !pub, wasHidden: !!slip.hidden, book: slip.book,
     legCount: legs.length,
     progress: { won: legs.filter((l) => l.status === 'won').length, lost: legs.filter((l) => l.status === 'lost').length, pending: legs.filter((l) => l.status === 'pending').length },
   };
-  if (!pub) return { ...base, progress: { won: 0, lost: 0, pending: legs.length }, odds: null, oddsText: '', toWin: null, note: null, legs: [] as ReturnType<typeof publicLeg>[], firstStart: null };
+  if (!pub) return { ...base, progress: { won: 0, lost: 0, pending: legs.length }, odds: null, oddsText: '', toWin: null, note: null, legs: [] as ReturnType<typeof publicLeg>[], ticket: null as ReturnType<typeof ticket> | null, firstStart: null };
   return {
     ...base, odds: slip.odds, oddsText: fmtOdds(slip.odds), toWin: toWin(slip, legs), note: slip.note,
-    legs: legs.map((l) => publicLeg(l, ctx)),
+    legs: legs.map((l) => publicLeg(l, ctx)), ticket: ticket(slip, legs),
     firstStart: legs.map((l) => l.start_time).filter(Boolean).sort()[0] ?? null,
   };
 }
@@ -104,7 +136,7 @@ export async function liveView(ctx: Ctx, includeAll: boolean) {
 export function leaderboard(ctx: Ctx, period: string) {
   const days = period === '7d' ? 7 : period === '30d' ? 30 : period === 'today' ? 1 : null;
   const since = days ? new Date(Date.now() - days * 86400_000).toISOString() : '0';
-  const rows = ctx.db.prepare(`SELECT user_id, user_name, status, stake, profit, is_demo FROM slips WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND settled_at >= ? ORDER BY settled_at`).all(since) as any[];
+  const rows = ctx.db.prepare(`SELECT user_id, user_name, status, stake, profit, is_demo FROM slips WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND is_test = 0 AND settled_at >= ? ORDER BY settled_at`).all(since) as any[];
   const m = new Map<string, any>();
   for (const r of rows) {
     const u = m.get(r.user_id) ?? { userId: r.user_id, user: r.user_name, profit: 0, staked: 0, w: 0, l: 0, p: 0, slips: 0, streak: '', demo: !!r.is_demo, last: [] as string[] };
@@ -136,7 +168,7 @@ export function boardView(ctx: Ctx, period: string) {
     cands.sort((a, b) => (b.toWin ?? 0) - (a.toWin ?? 0));
     if (cands[0]) poster = { ...cands[0], pinned: false };
   }
-  const totals = ctx.db.prepare(`SELECT count(*) AS n, sum(CASE WHEN status='won' THEN 1 ELSE 0 END) AS w, sum(CASE WHEN status='lost' THEN 1 ELSE 0 END) AS l, round(coalesce(sum(profit),0),2) AS profit FROM slips WHERE status IN ('won','lost','push','void')`).get() as any;
+  const totals = ctx.db.prepare(`SELECT count(*) AS n, sum(CASE WHEN status='won' THEN 1 ELSE 0 END) AS w, sum(CASE WHEN status='lost' THEN 1 ELSE 0 END) AS l, round(coalesce(sum(profit),0),2) AS profit FROM slips WHERE status IN ('won','lost','push','void') AND is_test = 0`).get() as any;
   return { asOf: Date.now(), today, open, recent, poster, leaderboard: leaderboard(ctx, period), period, totals };
 }
 

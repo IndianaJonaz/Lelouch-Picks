@@ -48,6 +48,12 @@ export interface Slip {
   created_at: string;
   settled_at: string | null;
   poster_day: string | null;  // YYYY-MM-DD if pinned as that day's poster
+  book: string | null;        // PrizePicks, FanDuel, Kalshi… (screenshot imports)
+  play_type: string | null;   // "6-Pick Power Play", "Flex Play"…
+  odds_text: string | null;   // odds exactly as logged ("+500", "6x", "YES 40¢ × 25")
+  payout: number | null;      // total payout as logged (won) or potential
+  is_test: number;            // staff-channel test slip: kept off standings
+  source_url: string | null;  // link to the original Discord message (no copy of the image is stored)
 }
 
 export function openDb(file: string): DatabaseSync {
@@ -102,7 +108,28 @@ export function openDb(file: string): DatabaseSync {
       user_agent TEXT
     );
     CREATE TABLE IF NOT EXISTS login_attempts (ip TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS photo_drafts (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL, user_name TEXT NOT NULL,
+      guild_id TEXT, channel_id TEXT, message_id TEXT, source_url TEXT,
+      image_key TEXT NOT NULL,
+      is_test INTEGER NOT NULL DEFAULT 0,
+      data TEXT NOT NULL,
+      read_error TEXT,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+    CREATE TABLE IF NOT EXISTS slip_imports (
+      user_id TEXT NOT NULL,
+      k TEXT NOT NULL,
+      slip_id TEXT NOT NULL REFERENCES slips(id) ON DELETE CASCADE,
+      PRIMARY KEY (user_id, k)
+    );
   `);
+  // Additive migrations for databases created before these columns existed.
+  const have = new Set((db.prepare('PRAGMA table_info(slips)').all() as { name: string }[]).map((c) => c.name));
+  for (const [col, type] of [['book', 'TEXT'], ['play_type', 'TEXT'], ['odds_text', 'TEXT'], ['payout', 'REAL'], ['is_test', 'INTEGER NOT NULL DEFAULT 0'], ['source_url', 'TEXT']]) {
+    if (!have.has(col)) db.exec(`ALTER TABLE slips ADD COLUMN ${col} ${type}`);
+  }
   return db;
 }
 

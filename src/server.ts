@@ -7,10 +7,10 @@ import type { Auth } from './auth.ts';
 import { ROOT } from './config.ts';
 import { ParseError } from './parse.ts';
 import type { Resolver } from './resolve.ts';
-import { createSlip, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
+import { deleteSlip, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
+import { importSlip, isFinalStatus, type FinalStatus } from './importer.ts';
 import { boardView, healthView, liveView, newsView, slipView, type Ctx } from './views.ts';
 import { dayInTz } from './util.ts';
-import type { SlipStatus } from './db.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -125,7 +125,7 @@ export function createServer(deps: ServerDeps) {
       if (!p.startsWith('/api/')) {
         if ((req.method === 'GET' || req.method === 'HEAD') && serveAsset(req, res, p === '/' ? '/index.html' : p)) return;
         // SPA routes
-        if (req.method === 'GET' && ['/live', '/board', '/news', '/login', '/dashboard'].includes(p)) { serveAsset(req, res, '/index.html'); return; }
+        if (req.method === 'GET' && (['/live', '/board', '/news', '/login', '/dashboard'].includes(p) || /^\/slip\/[A-Za-z0-9]+$/.test(p))) { serveAsset(req, res, '/index.html'); return; }
         return send(req, res, 404, { error: 'not found' });
       }
 
@@ -152,19 +152,30 @@ export function createServer(deps: ServerDeps) {
         if (p === '/api/admin/rotate-key' && req.method === 'POST') { const b = await body(req); if (b.revokeSessions) auth.revokeAll(); return send(req, res, 200, { key: auth.rotate() }); }
         if (p === '/api/admin/slips' && req.method === 'POST') {
           const b = await body(req);
-          const legs = [];
-          const texts = Array.isArray(b.legs) ? b.legs : String(b.text ?? '').split(/\r?\n|;|\|/).map((s: string) => s.trim()).filter(Boolean);
-          // Optional `date` (YYYY-MM-DD) imports a slip on games from that day, including finished ones.
+          const texts: string[] = (Array.isArray(b.legs) ? b.legs : String(b.text ?? '').split(/\r?\n|;|\|/)).map((s: unknown) => String(s).trim()).filter(Boolean);
           if (b.date != null && !/^\d{4}-\d{2}-\d{2}$/.test(String(b.date))) throw new SlipError('date must be YYYY-MM-DD.');
           const result = b.result == null ? null : { status: String(b.result.status), profit: Number(b.result.profit) };
-          if (result && (!['won', 'lost', 'push', 'void'].includes(result.status) || !Number.isFinite(result.profit))) throw new SlipError('result needs status won|lost|push|void and a numeric profit.');
-          const ro = { tz: ctx.tz, leagues: ctx.leagues, ...(b.date ? { days: [String(b.date)], allowFinal: true } : {}) };
-          for (const t of texts) legs.push(await deps.resolver.resolve(String(t), ro));
-          const slip = createSlip(ctx.db, { user_id: String(b.userId ?? b.user ?? 'api'), user_name: String(b.user ?? 'api'), title: b.title ?? null, stake: Number(b.stake ?? 1), odds: b.odds == null || b.odds === '' ? null : Number(b.odds), hidden: !!b.hidden, note: b.note ?? null, source: 'api' }, legs);
-          if (result) manualSettle(ctx.db, slip.id, result.status as SlipStatus, result.profit);
-          deps.onSlipCreated?.(); ctx.engine.poke();
-          const full = slipWithLegs(ctx.db, slip.id)!;
-          return send(req, res, 201, slipView(full.slip, full.legs, ctx));
+          if (result && (!isFinalStatus(result.status) || !Number.isFinite(result.profit))) throw new SlipError('result needs status won|lost|push|void and a numeric profit.');
+          // `date` imports a slip on that day's games (finished ones included); `result` settles it after the legs are graded.
+          const r = await importSlip(ctx, deps.resolver, texts.map((text) => ({ text })), {
+            userId: String(b.userId ?? b.user ?? 'api'), userName: String(b.user ?? 'api'), title: b.title ?? null, stake: Number(b.stake ?? 1),
+            odds: b.odds == null || b.odds === '' ? null : Number(b.odds), hidden: !!b.hidden, note: b.note ?? null, source: 'api',
+            date: b.date ? String(b.date) : null, result: result as { status: FinalStatus; profit: number } | null,
+          });
+          deps.onSlipCreated?.();
+          broadcast('tick', { at: Date.now(), changed: 1 });
+          return send(req, res, 201, slipView(r.slip, r.legs, ctx));
+        }
+        const dm = p.match(/^\/api\/admin\/slips\/([A-Za-z0-9]+)$/);
+        if (dm && req.method === 'GET') {
+          const full = slipWithLegs(ctx.db, dm[1]);
+          if (!full) return send(req, res, 404, { error: 'no such slip' });
+          return send(req, res, 200, { ...slipView({ ...full.slip, hidden: 0 }, full.legs, ctx), sourceUrl: full.slip.source_url });
+        }
+        if (dm && req.method === 'DELETE') {
+          deleteSlip(ctx.db, dm[1], 'admin', true);
+          broadcast('tick', { at: Date.now(), changed: 1 });
+          return send(req, res, 200, { ok: true, deleted: dm[1].toUpperCase() });
         }
         const m = p.match(/^\/api\/admin\/slips\/([A-Za-z0-9]+)\/(reveal|poster|settle)$/);
         if (m && req.method === 'POST') {
@@ -186,7 +197,7 @@ export function createServer(deps: ServerDeps) {
       if (p === '/api/news') return send(req, res, 200, await newsView(ctx));
       if (p === '/api/health') return send(req, res, 200, healthView(ctx));
       const sm = p.match(/^\/api\/slips\/([A-Za-z0-9]+)$/);
-      if (sm) { const s = slipWithLegs(ctx.db, sm[1]); return s ? send(req, res, 200, slipView(s.slip, s.legs, ctx)) : send(req, res, 404, { error: 'no such slip' }); }
+      if (sm) { const s = slipWithLegs(ctx.db, sm[1].toUpperCase()); return s ? send(req, res, 200, slipView(s.slip, s.legs, ctx)) : send(req, res, 404, { error: 'no such slip' }); }
       if (p === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
         res.write(`retry: 5000\nevent: hello\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`);

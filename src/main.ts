@@ -22,7 +22,8 @@ const resolver = new Resolver(espn);
 
 let bot: Bot | null = null;
 const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, demo: config.demo, bot: () => bot?.status ?? { status: 'idle', detail: 'not started', tag: null } };
-bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP });
+bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP,
+  vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds });
 
 const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP });
 server.listen(config.port, () => console.log(`[web] ${GROUP} listening on http://localhost:${config.port}  (public URL ${config.publicUrl})`));

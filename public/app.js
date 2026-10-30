@@ -33,7 +33,11 @@ async function api(path, opts = {}) {
 
 // ---------- routing ----------
 const ROUTES = { '/live': 'live', '/board': 'board', '/news': 'news' };
-function route() { const v = ROUTES[location.pathname]; if (!v) { history.replaceState(null, '', '/board'); return 'board'; } return v; }
+function route() {
+  const sm = location.pathname.match(/^\/slip\/([A-Za-z0-9]+)$/);
+  if (sm) { S.slipId = sm[1].toUpperCase(); return 'slip'; }
+  const v = ROUTES[location.pathname]; if (!v) { history.replaceState(null, '', '/board'); return 'board'; } return v;
+}
 document.addEventListener('click', (e) => {
   const a = e.target.closest('a[data-nav]');
   if (a && !e.metaKey && !e.ctrlKey) { e.preventDefault(); history.pushState(null, '', a.getAttribute('href')); go(); window.scrollTo({ top: 0 }); }
@@ -49,6 +53,7 @@ function go() { S.view = route(); render(); if (S.me?.authed) { load(S.view); co
 
 async function load(view) {
   try {
+    if (view === 'slip') { S.data.slip = await api(`/api/slips/${encodeURIComponent(S.slipId)}`); S.at.slip = Date.now(); S.err.slip = null; if (S.view === view) render(); return; }
     const path = view === 'live' ? `/api/live${S.showAll ? '?all=1' : ''}` : view === 'board' ? `/api/board?period=${S.period}` : null;
     if (view === 'news') {
       const [n, h] = await Promise.all([api('/api/news'), api('/api/health')]);
@@ -79,7 +84,7 @@ function render() {
   if (!S.me.authed) return renderLogin();
   const v = S.view;
   const nav = (p, label, ic) => `<a data-nav href="/${p}" class="${v === p ? 'on' : ''}">${ic}<span>${label}</span></a>`;
-  const body = S.err[v] && !S.data[v === 'news' ? 'news' : v] ? errBox(S.err[v]) : v === 'live' ? viewLive() : v === 'board' ? viewBoard() : viewNews();
+  const body = S.err[v] && !S.data[v === 'news' ? 'news' : v] ? errBox(S.err[v]) : v === 'live' ? viewLive() : v === 'board' ? viewBoard() : v === 'slip' ? viewSlip() : viewNews();
   $app.innerHTML = `
   <header class="top"><div class="top-in">
     <a data-nav href="/board" class="brand"><span class="logo-mark"></span><span>PICKS <b>HQ</b></span></a>
@@ -217,7 +222,7 @@ function miniLegs(s) {
   return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${stIc(l.status)}<div class="x">${esc(l.text)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small></div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
 }
 function slipCard(s) {
-  const hd = `<div class="slip-hd">${av(s.user)}<div><div class="who">${esc(s.user)} ${s.demo ? '<span class="chip demo">DEMO</span>' : ''}</div><div class="sid">${esc(s.title || `${s.legCount}-leg slip`)} · ${esc(s.id)}</div></div><span class="spacer"></span>
+  const hd = `<div class="slip-hd">${av(s.user)}<div><div class="who">${esc(s.user)} ${s.demo ? '<span class="chip demo">DEMO</span>' : ''}</div><div class="sid"><a data-nav href="/slip/${esc(s.id)}">${esc(s.title || `${s.legCount}-leg slip`)} · ${esc(s.id)}</a></div></div><span class="spacer"></span>
     ${s.hidden ? `<span class="chip hidden">HIDDEN</span>` : `<span class="chip ${s.status}">${s.status === 'open' ? `${s.progress.won}/${s.legCount} HIT` : s.status.toUpperCase()}</span>`}</div>`;
   if (s.hidden) return `<div class="card slip">${hd}<div class="locked">${svg.lock}<span>${s.legCount} leg(s) locked until ${esc(s.user)} reveals them or the slip settles.</span></div><div class="slip-ft"><span>Stake <b>${s.stake}u</b></span><span>Posted <span data-ago="${Date.parse(s.createdAt)}">${ago(Date.parse(s.createdAt))}</span></span></div></div>`;
   return `<div class="card slip">${hd}${miniLegs(s)}${s.note ? `<div class="note">“${esc(s.note)}”</div>` : ''}
@@ -276,6 +281,44 @@ function viewNews() {
   html += `<section class="sec"><div class="sec-head"><h2>System</h2><span class="chip ${h.overall === 'ok' ? 'won' : 'lost'}">${h.overall.toUpperCase()}</span></div><div class="card">${comps}</div></section>
     <section class="sec"><div class="sec-head"><h2>Data feeds</h2><span class="count">ESPN public JSON · calls since server start</span></div><div class="card">${feeds || '<div class="empty">No feed calls yet.</div>'}</div></section>`;
   return html;
+}
+
+// ---------- Slip page (ticket) ----------
+const money = (n, dollars) => (n == null ? '—' : dollars ? `$${Number(n).toFixed(2)}` : `${Number(n).toFixed(2)}u`);
+const signed = (n, dollars) => (n == null ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${money(Math.abs(n), dollars)}`);
+const fmtDate = (iso) => (iso ? new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleDateString([], { month: 'short', day: 'numeric' }) : '');
+const fmtStamp = (iso) => (iso ? new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
+const WORD_CLS = { waiting: 'pending', hit: 'won', miss: 'lost', push: 'push', void: 'void', check: 'review' };
+function ticketHtml(s) {
+  const t = s.ticket, $ = !!s.book;
+  const ring = t.legCount ? Math.round((t.hits / t.legCount) * 100) : 0;
+  const rows = s.legs.map((l) => `<div class="tk-row ${esc(l.status)}">${l.headshot ? `<img class="hs" src="${esc(l.headshot)}" alt="" loading="lazy">` : `<span class="hs ph">${esc(l.leagueLabel.slice(0, 3))}</span>`}<div class="x">${esc(l.ticketText)}${l.actual != null ? ` <b class="act">${esc(l.actual)}</b>` : ''}</div>${stIc(l.status)}</div>`).join('');
+  return `<div class="ticket ${esc(s.status)}">
+    <div class="tk-top">${t.book ? `<span class="tk-book">${esc(t.book.toUpperCase())}</span>` : ''}${t.playBadge ? `<span class="tk-play">${esc(t.playBadge)}</span>` : ''}${t.isTest ? '<span class="tk-play">TEST</span>' : ''}<span class="spacer"></span><span class="tk-id">#${esc(s.id)}</span></div>
+    <div class="tk-mid"><div><div class="tk-big">${money(t.risk, $)} → ${money(t.pays, $)}</div><div class="tk-sub">${esc(t.sports.join(' / '))} · ${t.legCount} leg${t.legCount === 1 ? '' : 's'}${t.oddsAsLogged ? ' · ' + esc(t.oddsAsLogged) : ''}</div>
+      <div class="tk-status">${esc(t.statusLine)}</div></div>
+      <div class="tk-ring" style="--p:${ring}"><b>${t.hits}/${t.legCount}</b><small>HIT</small></div></div>
+    <div class="tk-rows">${rows}</div>
+    <div class="tk-ft">${av(s.user)}<div><b>${esc(s.user)}</b><small>logged ${esc(fmtStamp(s.createdAt))}</small></div></div></div>`;
+}
+function viewSlip() {
+  const s = S.data.slip;
+  const back = `<a data-nav href="/board" class="dim" style="font-size:13px">← The Board</a>`;
+  if (S.err.slip && !s) return back + errBox(S.err.slip);
+  if (!s || s.id !== S.slipId) return back + skel();
+  if (s.hidden) return back + `<div class="card empty" style="margin-top:14px">${svg.lock}<b>Hidden slip</b>${s.legCount} leg(s) stay hidden until ${esc(s.user)} reveals them or it settles.</div>`;
+  const t = s.ticket, $ = !!s.book;
+  const chip = s.status === 'won' ? 'WIN' : s.status === 'lost' ? 'LOSS' : s.status.toUpperCase();
+  const head = `<div class="sp-head">${av(s.user)}<div><h1>Slip #${esc(s.id)} <span class="chip ${esc(s.status)}">${chip}</span>${s.test ? ' <span class="chip demo">TEST</span>' : ''}</h1>
+    <div class="sp-chips"><b>${esc(s.user)}</b>${t.book ? `<span class="chip">${esc(t.book)}</span>` : ''}${t.sports.map((x) => `<span class="chip">${esc(x)}</span>`).join('')}</div>
+    <div class="dim" style="font-size:13px">Logged ${esc(fmtDate(s.createdAt))}${s.settledAt ? ` · settled ${esc(fmtDate(s.settledAt))}` : ''}</div></div></div>`;
+  const tiles = `<div class="stats sp-tiles"><div class="card stat"><div class="k">Risk</div><div class="v num">${money(t.risk, $)}</div></div>
+    <div class="card stat"><div class="k">Pays</div><div class="v num">${money(t.pays, $)}</div></div>
+    <div class="card stat"><div class="k">Net</div><div class="v num ${cls(t.net)}">${t.net == null ? '—' : signed(t.net, $)}</div></div></div>`;
+  const legs = `<section class="sec"><div class="sec-head"><h2>Legs</h2><span class="count">${s.legCount}</span></div><div class="card">${t.playType ? `<div class="dim" style="padding:10px 14px 0">${esc(t.playType)}</div>` : ''}
+    ${s.legs.map((l) => `<div class="sp-leg">${stIc(l.status)}<div class="x">${esc(l.ticketText)}${l.detail ? `<small>${esc(l.detail)}</small>` : ''}</div><span class="w ${WORD_CLS[l.statusWord] || ''}">${esc(l.statusWord)}${l.actual != null ? ` · ${esc(l.actual)}` : ''}</span></div>`).join('')}</div></section>`;
+  const src = s.book ? `<p class="dim" style="font-size:12px">The original screenshot isn’t stored here; it stays in the Discord message the ticket replies to.</p>` : '';
+  return back + head + tiles + `<section class="sec">${ticketHtml(s)}</section>` + legs + src + (s.note ? `<div class="card note" style="padding:12px 14px">“${esc(s.note)}”</div>` : '');
 }
 
 boot();

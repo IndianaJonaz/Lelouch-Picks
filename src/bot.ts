@@ -1,8 +1,12 @@
 // Discord bot. Starts only when DISCORD_BOT_TOKEN is set; the web app never depends on it.
 import {
-  ActionRowBuilder, Client, EmbedBuilder, Events, GatewayIntentBits, ModalBuilder, PermissionFlagsBits,
-  SlashCommandBuilder, TextInputBuilder, TextInputStyle, type ChatInputCommandInteraction, type Interaction, type ModalSubmitInteraction,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events, GatewayIntentBits, ModalBuilder, PermissionFlagsBits,
+  SlashCommandBuilder, TextInputBuilder, TextInputStyle, type ButtonInteraction, type ChatInputCommandInteraction, type Interaction, type Message, type ModalSubmitInteraction,
 } from 'discord.js';
+import { confirmDraft, deleteDraft, draftCard, editDefaults, editDraft, getDraft, purgeDrafts, readPhoto, type Draft } from './photoslips.ts';
+import { VisionError, type XaiOpts } from './slipvision.ts';
+import type { APIEmbed } from 'discord.js';
+import { getSlip } from './db.ts';
 import type { Auth } from './auth.ts';
 import { getLegs, type Leg, type Slip } from './db.ts';
 import type { Engine, SettledEvent } from './engine.ts';
@@ -46,18 +50,65 @@ export const commands = [
     .addBooleanOption((o) => o.setName('signout').setDescription('Also sign out every dashboard session')),
 ].map((c) => c.toJSON());
 
-export interface BotDeps { ctx: Ctx; auth: Auth; resolver: Resolver; engine: Engine; token: string; guildId: string; adminRoles: string[]; publicUrl: string; groupName: string }
+export interface BotDeps {
+  ctx: Ctx; auth: Auth; resolver: Resolver; engine: Engine; token: string; guildId: string; adminRoles: string[]; publicUrl: string; groupName: string;
+  /** Screenshot reading (xAI). null = feature off. */
+  vision?: XaiOpts | null;
+  /** Only read screenshots in these channels (or threads under them). Empty = any channel the bot can see. */
+  slipChannelIds?: string[];
+  /** Staff channels: screenshots there become test slips, kept out of standings. */
+  staffChannelIds?: string[];
+}
+
+const MAX_IMAGES_PER_MESSAGE = 4;
+const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
+
+/** Intents the bot needs. Reading screenshots needs message events + the privileged Message Content intent. */
+export function botIntents(visionOn: boolean): GatewayIntentBits[] {
+  return visionOn ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : [GatewayIntentBits.Guilds];
+}
+
+/** Ticket embed for a logged slip (pure data, so it is tested without Discord). Everything comes from slipView/ticket(). */
+export function ticketEmbed(v: ReturnType<typeof slipView>, publicUrl: string, tz: string): APIEmbed {
+  const t = v.ticket;
+  if (!t) return { color: BRAND, title: `🔒 Hidden slip · #${v.id}` };
+  const money = (n: number | null | undefined) => (n == null ? '—' : `$${n.toFixed(2)}`);
+  const net = t.net == null ? '' : ` · net ${t.net > 0 ? '+' : t.net < 0 ? '−' : ''}${money(Math.abs(t.net))}`;
+  const badge = [t.book ? `**${t.book.toUpperCase()}**` : null, t.playBadge ? `\`${t.playBadge}\`` : null, t.isTest ? '`TEST`' : null].filter(Boolean).join('  ');
+  const color = v.status === 'won' ? 0x22c55e : v.status === 'lost' ? 0xef4444 : v.status === 'review' ? 0xf59e0b : v.status === 'open' ? BRAND : 0x94a3b8;
+  const rows = v.legs.map((l) => `${ICON[l.status] ?? '•'} ${l.ticketText}${l.actual != null ? ` — **${l.actual}**` : ''} · _${l.statusWord}_`);
+  const logged = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(v.createdAt.endsWith('Z') ? v.createdAt : v.createdAt + 'Z'));
+  return {
+    color, url: `${publicUrl}/slip/${v.id}`,
+    author: { name: badge.replace(/[*`]/g, '') || 'Slip' },
+    title: `${money(t.risk)} → ${money(t.pays)}   ·   #${v.id}`,
+    description: [
+      `${badge}`,
+      `${t.sports.join(' / ')} · ${t.legCount} leg${t.legCount === 1 ? '' : 's'} · **${t.hits}/${t.legCount} HIT**`,
+      `**${t.statusLine}**${net}${t.oddsAsLogged ? ` · odds ${t.oddsAsLogged}` : ''}`,
+      '',
+      ...rows,
+    ].join('\n').slice(0, 4000),
+    thumbnail: v.legs.find((l) => l.headshot)?.headshot ? { url: v.legs.find((l) => l.headshot)!.headshot! } : undefined,
+    footer: { text: `logged by ${v.user} · ${logged} CT${t.isTest ? ' · test slip (not in standings)' : ''}` },
+  };
+}
+
+const UNSUPPORTED_REPLY = (mime: string) => /heic|heif/i.test(mime)
+  ? '📷 iPhone HEIC photos can’t be read yet — please send a screenshot (PNG) or a JPG of the slip.'
+  : `📷 I can only read PNG or JPG slip images (that one was ${mime || 'unknown'}).`;
 
 export class Bot {
   status: { status: string; detail: string | null; tag: string | null } = { status: 'idle', detail: 'DISCORD_BOT_TOKEN not set — bot disabled, web app running', tag: null };
   private client: Client | null = null;
+  private announcing = false;
   private d: BotDeps;
   constructor(d: BotDeps) { this.d = d; }
 
-  async start() {
+  async start(): Promise<void> {
     if (!this.d.token) return;
     this.status = { status: 'connecting', detail: 'logging in to Discord…', tag: null };
-    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+    const client = new Client({ intents: botIntents(!!this.d.vision) });
     this.client = client;
     client.once(Events.ClientReady, async (c) => {
       this.status = { status: 'ok', detail: `connected as ${c.user.tag} · ${c.guilds.cache.size} server(s)`, tag: c.user.tag };
@@ -68,17 +119,29 @@ export class Bot {
       } catch (e) { console.error('[bot] command registration failed', e); this.status.detail += ' · command registration failed: ' + (e as Error).message; }
     });
     client.on(Events.InteractionCreate, (i) => this.onInteraction(i).catch((e) => console.error('[bot] interaction error', e)));
+    if (this.d.vision) {
+      client.on(Events.MessageCreate, (m) => this.onMessage(m).catch((e) => console.error('[bot] screenshot import error', e)));
+      console.log(`[bot] slip screenshots: on (${this.d.slipChannelIds?.length ? this.d.slipChannelIds.length + ' channel(s)' : 'any channel'})`);
+    }
     client.on(Events.ShardDisconnect, () => { this.status = { ...this.status, status: 'down', detail: 'disconnected from gateway, reconnecting' }; });
     client.on(Events.ShardResume, () => { this.status = { ...this.status, status: 'ok', detail: `connected as ${this.status.tag}` }; });
     client.on(Events.Error, (e) => { this.status = { ...this.status, status: 'down', detail: e.message }; });
-    this.d.engine.on('settled', (e: SettledEvent) => this.announce(e).catch(() => {}));
+    if (!this.announcing) { this.announcing = true; this.d.engine.on('settled', (e: SettledEvent) => this.announce(e).catch(() => {})); }
     try { await client.login(this.d.token); }
-    catch (e) { this.status = { status: 'down', detail: `login failed: ${(e as Error).message}`, tag: null }; console.error('[bot] login failed:', (e as Error).message); }
+    catch (e) {
+      // Message Content is a privileged intent: if it isn't enabled in the Developer Portal, keep the bot up without screenshots.
+      if (this.d.vision && /disallowed intents/i.test((e as Error).message)) {
+        console.warn('[bot] Message Content intent not enabled in the Discord Developer Portal — slip screenshots disabled; slash commands still work.');
+        await client.destroy().catch(() => {});
+        this.d = { ...this.d, vision: null };
+        return this.start();
+      }
+      this.status = { status: 'down', detail: `login failed: ${(e as Error).message}`, tag: null }; console.error('[bot] login failed:', (e as Error).message); }
   }
 
   async stop() { await this.client?.destroy(); }
 
-  private isAdmin(i: ChatInputCommandInteraction) {
+  private isAdmin(i: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction) {
     if (i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;
     const roles = (i.member as any)?.roles;
     const ids: string[] = Array.isArray(roles) ? roles : roles?.cache ? [...roles.cache.keys()] : [];
@@ -87,6 +150,9 @@ export class Bot {
 
   private async onInteraction(i: Interaction) {
     if (i.isModalSubmit() && i.customId.startsWith('pick:')) return this.onPickModal(i);
+    if (i.isButton() && i.customId.startsWith('photodel:')) return this.onPhotoDelete(i);
+    if (i.isButton() && i.customId.startsWith('pd:')) return this.onDraftButton(i);
+    if (i.isModalSubmit() && i.customId.startsWith('pdm:')) return this.onDraftModal(i);
     if (!i.isChatInputCommand()) return;
     try {
       switch (i.commandName) {
@@ -156,6 +222,120 @@ export class Bot {
     if (o.hidden && i.channel && 'send' in i.channel) {
       await (i.channel as any).send({ content: `🔒 **${slip.user_name}** locked in a hidden ${legs.length}-leg slip (\`${slip.id}\`, ${slip.stake}u). Legs stay hidden until revealed.` }).catch(() => {});
     }
+  }
+
+  private inList(m: Message, ids: string[] | undefined): boolean {
+    if (!ids?.length) return false;
+    const parent = (m.channel as any)?.parentId as string | undefined;
+    return ids.includes(m.channelId) || (!!parent && ids.includes(parent));
+  }
+
+  private draftComponents(d: Draft, canConfirm: boolean) {
+    return [new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`pd:ok:${d.id}`).setStyle(ButtonStyle.Success).setLabel('Confirm').setDisabled(!canConfirm),
+      new ButtonBuilder().setCustomId(`pd:edit:${d.id}`).setStyle(ButtonStyle.Secondary).setLabel('Edit'),
+      new ButtonBuilder().setCustomId(`pd:no:${d.id}`).setStyle(ButtonStyle.Danger).setLabel('Cancel'),
+    )];
+  }
+
+  private async onMessage(m: Message) {
+    if (m.author.bot || !m.inGuild() || !this.d.vision) return;
+    const isStaff = this.inList(m, this.d.staffChannelIds);
+    const watched = isStaff || this.inList(m, this.d.slipChannelIds);
+    if (this.d.slipChannelIds?.length && !watched) return;
+    const atts = [...m.attachments.values()].filter((a) => (a.contentType ?? '').startsWith('image/') || /\.(heic|heif)$/i.test(a.name ?? '')).slice(0, MAX_IMAGES_PER_MESSAGE);
+    purgeDrafts(this.d.ctx);
+    for (const a of atts) {
+      const mime = (a.contentType ?? (/\.(heic|heif)$/i.test(a.name ?? '') ? 'image/heic' : '')).split(';')[0];
+      if (a.size > MAX_IMAGE_BYTES) continue;
+      if (!/^image\/(png|jpe?g)$/.test(mime)) {
+        // Only nag about formats where we expect slips, or for iPhone HEIC photos anywhere.
+        if (watched || /heic|heif/i.test(mime)) await m.reply({ content: UNSUPPORTED_REPLY(mime), allowedMentions: { repliedUser: false } }).catch(() => {});
+        continue;
+      }
+      await (m.channel as any).sendTyping?.().catch(() => {});
+      let image: Uint8Array;
+      try {
+        const r = await fetch(a.url, { signal: AbortSignal.timeout(30_000) });
+        if (!r.ok) throw new Error(`attachment HTTP ${r.status}`);
+        image = new Uint8Array(await r.arrayBuffer()); // in memory only — never written anywhere
+      } catch (e) { console.error('[bot] attachment fetch failed', (e as Error).message); continue; }
+      const out = await readPhoto(this.d.ctx, this.d.vision, {
+        image, mime, userId: m.author.id, userName: m.member?.displayName ?? m.author.globalName ?? m.author.username,
+        guildId: m.guildId, channelId: m.channelId, messageId: m.id, sourceUrl: m.url, isTest: isStaff, forceCard: watched,
+      });
+      if (out.kind === 'not_slip') continue;
+      if (out.kind === 'unsupported') { await m.reply({ content: UNSUPPORTED_REPLY(out.mime), allowedMentions: { repliedUser: false } }).catch(() => {}); continue; }
+      if (out.kind === 'duplicate') { await m.reply({ content: `This slip is already logged as \`${out.slipId}\`.`, allowedMentions: { repliedUser: false } }).catch(() => {}); continue; }
+      for (const [i, d] of out.drafts.entries()) {
+        const card = draftCard(d, { i: i + 1, of: out.drafts.length });
+        await m.reply({ content: card.text, components: this.draftComponents(d, card.canConfirm), allowedMentions: { repliedUser: false } })
+          .catch((e) => console.error('[bot] card reply failed', e.message));
+      }
+    }
+  }
+
+  private canAct(i: ButtonInteraction | ModalSubmitInteraction, ownerId: string) { return i.user.id === ownerId || this.isAdmin(i); }
+
+  private async onDraftButton(i: ButtonInteraction) {
+    const [, action, id] = i.customId.split(':');
+    const d = getDraft(this.d.ctx, id);
+    if (!d) return i.update({ content: `${i.message.content.split('\n')[0]}\n_This card expired or was already handled._`, components: [] });
+    if (!this.canAct(i, d.userId)) return i.reply({ ephemeral: true, content: `Only ${d.userName} or an admin can do that.` });
+    if (action === 'no') { deleteDraft(this.d.ctx, id); return i.update({ content: '🗑️ Cancelled — nothing was logged.', components: [] }); }
+    if (action === 'edit') {
+      const v = editDefaults(d);
+      const ti = (cid: string, label: string, style: TextInputStyle, val: string, ph: string, max = 4000) => new ActionRowBuilder<TextInputBuilder>().addComponents(
+        new TextInputBuilder().setCustomId(cid).setLabel(label).setStyle(style).setRequired(false).setValue(val.slice(0, max)).setPlaceholder(ph).setMaxLength(max));
+      const modal = new ModalBuilder().setCustomId(`pdm:${id}`).setTitle('Fix the slip').addComponents(
+        ti('sp', 'Stake / payout ($)', TextInputStyle.Short, v.stakePayout, '55 / 330', 40),
+        ti('res', 'Result: won / lost / push / void / open', TextInputStyle.Short, v.result, 'won', 10),
+        ti('odds', 'Odds as logged (optional)', TextInputStyle.Short, v.odds, '+500 · 6x · YES 40¢ × 25', 60),
+        ti('date', 'Games date YYYY-MM-DD (optional)', TextInputStyle.Short, v.date, '2026-10-14', 10),
+        ti('legs', 'Legs, one per line ("?" = blank)', TextInputStyle.Paragraph, v.legs, 'Jayson Tatum (BOS) u19.5 Points = won 19'),
+      );
+      return i.showModal(modal);
+    }
+    // confirm
+    await i.deferUpdate();
+    const out = await confirmDraft(this.d.ctx, this.d.resolver, id);
+    if (out.kind === 'gone') return i.editReply({ content: '_This card expired — post the screenshot again._', components: [] });
+    if (out.kind === 'blocked') return i.followUp({ ephemeral: true, content: `Can’t log it yet — fill in: ${out.missing.join('; ')}` });
+    if (out.kind === 'duplicate') return i.editReply({ content: `Already logged as \`${out.slipId}\`.`, components: [] });
+    const v = slipView(out.slip, out.legs, this.d.ctx);
+    this.d.engine.emit('tick', { changed: [out.slip.id] });
+    const warn = out.problems.length ? `⚠️ Parked for review — ${out.problems.join('; ')}. An admin can fix it with /settle.` : '';
+    return i.editReply({
+      content: [`✅ Logged \`${out.slip.id}\`${out.unresolved ? ` · ${out.unresolved} leg(s) aren't on ESPN, so their results come from the slip` : ''}`, warn].filter(Boolean).join('\n'),
+      embeds: [new EmbedBuilder(ticketEmbed(v, this.d.publicUrl, this.d.ctx.tz))],
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`photodel:${out.slip.id}`).setStyle(ButtonStyle.Danger).setEmoji('❌').setLabel('Delete (misread)'))],
+    });
+  }
+
+  private async onDraftModal(i: ModalSubmitInteraction) {
+    const id = i.customId.slice('pdm:'.length);
+    const d = getDraft(this.d.ctx, id);
+    if (!d) return i.reply({ ephemeral: true, content: 'That card expired — post the screenshot again.' });
+    if (!this.canAct(i, d.userId)) return i.reply({ ephemeral: true, content: `Only ${d.userName} or an admin can edit this.` });
+    try {
+      const nd = editDraft(this.d.ctx, id, { stakePayout: i.fields.getTextInputValue('sp'), result: i.fields.getTextInputValue('res'), odds: i.fields.getTextInputValue('odds'), date: i.fields.getTextInputValue('date'), legs: i.fields.getTextInputValue('legs') });
+      const card = draftCard(nd);
+      if (i.isFromMessage()) return i.update({ content: card.text, components: this.draftComponents(nd, card.canConfirm) });
+      return i.reply({ content: card.text, components: this.draftComponents(nd, card.canConfirm) });
+    } catch (e) {
+      if (e instanceof VisionError) return i.reply({ ephemeral: true, content: `⚠️ ${e.message}` });
+      throw e;
+    }
+  }
+
+  private async onPhotoDelete(i: ButtonInteraction) {
+    const id = i.customId.slice('photodel:'.length);
+    const slip = getSlip(this.d.ctx.db, id);
+    if (!slip) return i.update({ content: `${i.message.content}\n~~deleted~~`, embeds: [], components: [] });
+    if (slip.user_id !== i.user.id && !this.isAdmin(i)) return i.reply({ ephemeral: true, content: 'Only the person who posted it (or an admin) can delete this slip.' });
+    deleteSlip(this.d.ctx.db, id, slip.user_id, true);
+    this.d.engine.emit('tick', { changed: [] });
+    return i.update({ content: `🗑️ Deleted slip \`${id}\` — post it again or use \`/pick\`.`, embeds: [], components: [] });
   }
 
   slipEmbed(slip: Slip, legs: Leg[], header?: string, ownerView = false) {

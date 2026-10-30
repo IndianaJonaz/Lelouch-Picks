@@ -135,3 +135,23 @@ export function toWin(slip: Pick<Slip, 'stake' | 'odds'>, legs: Pick<Leg, 'odds'
   if (legs.length && legs.every((l) => l.odds != null)) return round2(slip.stake * (legs.reduce((d, l) => d * americanToDecimal(l.odds!), 1) - 1));
   return null;
 }
+
+/** Problems that would make a settled slip contradict its own legs (e.g. "WIN" with 0 hits, or a negative net on a win). */
+export function consistencyProblems(slip: Pick<Slip, 'status' | 'profit' | 'play_type'>, legs: Pick<Leg, 'status'>[]): string[] {
+  const p: string[] = [];
+  const won = legs.filter((l) => l.status === 'won').length;
+  const lost = legs.filter((l) => l.status === 'lost').length;
+  const pending = legs.filter((l) => l.status === 'pending').length;
+  const flex = /flex/i.test(slip.play_type ?? '');
+  if (slip.status === 'won') {
+    if (!(slip.profit != null && slip.profit > 0)) p.push('a win must have a positive net');
+    if (!won) p.push(`marked won but 0/${legs.length} legs hit`);
+    if (lost && !flex) p.push(`marked won but ${lost} leg(s) missed on a non-flex play`);
+  }
+  if (slip.status === 'lost') {
+    if (!(slip.profit != null && slip.profit < 0)) p.push('a loss must have a negative net');
+    if (!lost && !pending && legs.length) p.push('marked lost but no leg missed');
+  }
+  if ((slip.status === 'push' || slip.status === 'void') && slip.profit !== 0) p.push(`${slip.status} must have a net of 0`);
+  return p;
+}

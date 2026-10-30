@@ -33,20 +33,7 @@ export class Engine extends EventEmitter {
     let error: string | null = null;
     await Promise.all(events.map(async ({ league, event_id }) => {
       try {
-        const s = await this.espn.summary(league, event_id);
-        const game = gameFromSummary(league, s.data, s.at);
-        if (!game) throw new Error('summary had no header');
-        const box = parseBox(league, s.data);
-        this.snaps.set(event_id, { league, game, box, at: s.at, stale: s.stale, error: s.stale ? 'serving cached data — feed not answering' : null });
-        const legs = this.db.prepare(`SELECT * FROM legs WHERE event_id = ? AND status = 'pending'`).all(event_id) as unknown as Leg[];
-        for (const leg of legs) {
-          const g = gradeLeg(leg, game, box);
-          if (g.status !== leg.status || g.actual !== leg.actual || g.detail !== leg.detail) {
-            this.db.prepare(`UPDATE legs SET status = ?, actual = ?, detail = ?, graded_at = CASE WHEN ? != 'pending' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE graded_at END WHERE id = ?`)
-              .run(g.status, g.actual, g.detail, g.status, leg.id);
-            changedSlips.add(leg.slip_id);
-          }
-        }
+        for (const id of await this.gradeEvent(league, event_id)) changedSlips.add(id);
       } catch (e) {
         error = (e as Error).message;
         const prev = this.snaps.get(event_id);
@@ -57,6 +44,32 @@ export class Engine extends EventEmitter {
     this.lastTick = { at: Date.now(), ms: Date.now() - t0, events: events.length, error };
     this.emit('tick', { changed: [...changedSlips] });
     return { changedSlips: [...changedSlips] };
+  }
+
+  /** Fetch one event's summary, update the snapshot, grade its pending legs. Returns the slip ids whose legs changed. */
+  async gradeEvent(league: string, eventId: string): Promise<string[]> {
+    const s = await this.espn.summary(league, eventId);
+    const game = gameFromSummary(league, s.data, s.at);
+    if (!game) throw new Error('summary had no header');
+    const box = parseBox(league, s.data);
+    this.snaps.set(eventId, { league, game, box, at: s.at, stale: s.stale, error: s.stale ? 'serving cached data — feed not answering' : null });
+    const changed = new Set<string>();
+    const legs = this.db.prepare(`SELECT * FROM legs WHERE event_id = ? AND status = 'pending'`).all(eventId) as unknown as Leg[];
+    for (const leg of legs) {
+      const g = gradeLeg(leg, game, box);
+      if (g.status !== leg.status || g.actual !== leg.actual || g.detail !== leg.detail) {
+        this.db.prepare(`UPDATE legs SET status = ?, actual = ?, detail = ?, graded_at = CASE WHEN ? != 'pending' THEN strftime('%Y-%m-%dT%H:%M:%fZ','now') ELSE graded_at END WHERE id = ?`)
+          .run(g.status, g.actual, g.detail, g.status, leg.id);
+        changed.add(leg.slip_id);
+      }
+    }
+    return [...changed];
+  }
+
+  /** Grade one slip's legs right now from ESPN box scores (does not settle the slip). Feed errors leave legs pending. */
+  async gradeSlipLegs(slipId: string): Promise<void> {
+    const events = this.db.prepare(`SELECT DISTINCT league, event_id FROM legs WHERE slip_id = ? AND event_id IS NOT NULL AND status = 'pending'`).all(slipId) as { league: string; event_id: string }[];
+    await Promise.all(events.map((e) => this.gradeEvent(e.league, e.event_id).catch(() => [])));
   }
 
   settle(slipId: string) {

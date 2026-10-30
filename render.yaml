@@ -18,3 +18,12 @@ services:
         generateValue: true
       - key: ADMIN_TOKEN
         generateValue: true
+      # Slip screenshots in Discord (xAI vision). Leave unset to keep the feature off.
+      - key: XAI_API_KEY
+        sync: false
+      # Optional: comma-separated channel IDs to read screenshots in (blank = any channel the bot can see).
+      - key: DISCORD_SLIP_CHANNEL_IDS
+        sync: false
+      # Optional: staff channel IDs; screenshots confirmed there are test slips (kept out of standings).
+      - key: DISCORD_STAFF_CHANNEL_IDS
+        sync: false
