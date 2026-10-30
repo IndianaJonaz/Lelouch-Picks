@@ -12,7 +12,9 @@ import { createSlip, deleteSlip, isPublic, manualSettle, revealSlip, setPoster, 
 import { dayInTz, fmtOdds } from './util.ts';
 import { boardView, leaderboard, legText, liveView, slipView, type Ctx } from './views.ts';
 
-const BRAND = 0x7c5cff;
+const BRAND = 0xc8102e; // Geass theme: Britannia crimson
+const WON = 0xd4af37; // imperial gold
+const LOST = 0x8b0000; // deep blood crimson
 const ICON: Record<string, string> = { pending: '⏳', won: '✅', lost: '❌', push: '➖', void: '⚪', review: '🔎', open: '🟣' };
 const units = (n: number | null | undefined) => (n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(2)}u`);
 const bar = (pct: number | null, width = 10) => { const n = Math.round(Math.max(0, Math.min(1, pct ?? 0)) * width); return '▰'.repeat(n) + '▱'.repeat(width - n); };
@@ -159,7 +161,7 @@ export class Bot {
   slipEmbed(slip: Slip, legs: Leg[], header?: string, ownerView = false) {
     const pub = isPublic(slip) || ownerView;
     const v = slipView({ ...slip, hidden: pub ? 0 : slip.hidden }, legs, this.d.ctx);
-    const e = new EmbedBuilder().setColor(slip.status === 'won' ? 0x22c55e : slip.status === 'lost' ? 0xef4444 : BRAND)
+    const e = new EmbedBuilder().setColor(slip.status === 'won' ? WON : slip.status === 'lost' ? LOST : BRAND)
       .setAuthor({ name: `${slip.user_name}${slip.is_demo ? ' · DEMO' : ''}` })
       .setTitle(`${header ? header + ' · ' : ''}${slip.title ?? `${legs.length}-leg slip`} · ${slip.id}`)
       .setURL(this.d.publicUrl + '/board');
