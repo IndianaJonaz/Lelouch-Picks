@@ -81,8 +81,9 @@ setInterval(renderFresh, 1000);
 // ---------- render ----------
 function render() {
   if (!S.me) return;
-  if (!S.me.authed) return renderLogin();
+  if (!S.me.authed) { document.body.dataset.view = 'login'; return renderLogin(); }
   const v = S.view;
+  document.body.dataset.view = v;
   const nav = (p, label, ic) => `<a data-nav href="/${p}" class="${v === p ? 'on' : ''}">${ic}<span>${label}</span></a>`;
   const body = S.err[v] && !S.data[v === 'news' ? 'news' : v] ? errBox(S.err[v]) : v === 'live' ? viewLive() : v === 'board' ? viewBoard() : v === 'slip' ? viewSlip() : viewNews();
   $app.innerHTML = `
