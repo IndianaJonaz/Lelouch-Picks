@@ -101,7 +101,27 @@ function render() {
   $app.querySelectorAll('[data-more]').forEach((b) => (b.onclick = () => { S.allRecent = true; render(); }));
   $app.querySelectorAll('[data-newstab]').forEach((b) => (b.onclick = () => { S.newsTab = b.dataset.newstab; render(); }));
   $app.querySelectorAll('[data-all]').forEach((b) => (b.onclick = () => { S.showAll = b.dataset.all === '1'; render(); load('live'); }));
+  $app.querySelectorAll('[data-wincard]').forEach((b) => (b.onclick = (ev) => {
+    ev.preventDefault();
+    ev.stopPropagation();
+    const slip = slipForCard(b.getAttribute('data-wincard'));
+    if (slip && window.PicksWinCard) window.PicksWinCard.open(slip);
+  }));
   renderFresh();
+}
+
+function slipForCard(id) {
+  if (!id) return null;
+  const cands = [];
+  if (S.data.slip && S.data.slip.id === id) cands.push(S.data.slip);
+  const recent = (S.data.board && S.data.board.recent) || [];
+  const hit = recent.find((s) => s.id === id);
+  if (hit) cands.push(hit);
+  return cands.find((s) => s && !s.hidden && s.status === 'won' && s.ticket && s.legs && s.legs.length) || null;
+}
+function winCardBtn(s) {
+  if (!s || s.status !== 'won' || s.hidden || !s.ticket || !s.legs || !s.legs.length) return '';
+  return `<button type="button" class="win-card-btn" data-wincard="${esc(s.id)}" aria-label="Win card for ${esc(s.user)}">Win card</button>`;
 }
 
 function renderFresh() {
@@ -257,7 +277,7 @@ function viewBoard() {
       <td class="num">${r.w}-${r.l}${r.p ? '-' + r.p : ''}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td><td class="num hm muted">${r.staked}u</td>
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty"><b>No settled slips in this window</b>Rankings appear once slips grade.</div>`}</div></section>`;
-  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res">${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div><span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
+  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res">${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div><span class="p num ${cls(s.profit)}">${u(s.profit)}</span>${winCardBtn(s)}</div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
   return html;
 }
 
@@ -342,7 +362,8 @@ function viewSlip() {
   const legs = `<section class="sec"><div class="sec-head"><h2>Legs</h2><span class="count">${s.legCount}</span></div><div class="card">${t.playType ? `<div class="dim" style="padding:10px 14px 0">${esc(t.playType)}</div>` : ''}
     ${s.legs.map((l) => `<div class="sp-leg">${stIc(l.status)}<div class="x">${esc(l.ticketText)}${l.detail ? `<small>${esc(l.detail)}</small>` : ''}</div><span class="w ${WORD_CLS[l.statusWord] || ''}">${esc(l.statusWord)}${l.actual != null ? ` · ${esc(l.actual)}` : ''}</span></div>`).join('')}</div></section>`;
   const src = s.book ? `<p class="dim" style="font-size:12px">The original screenshot isn’t stored here; it stays in the Discord message the ticket replies to.</p>` : '';
-  return back + head + tiles + `<section class="sec">${ticketHtml(s)}</section>` + legs + src + (s.note ? `<div class="card note" style="padding:12px 14px">“${esc(s.note)}”</div>` : '');
+  const winBtn = winCardBtn(s);
+  return back + head + (winBtn ? `<div class="sp-win">${winBtn}</div>` : '') + tiles + `<section class="sec">${ticketHtml(s)}</section>` + legs + src + (s.note ? `<div class="card note" style="padding:12px 14px">“${esc(s.note)}”</div>` : '');
 }
 
 boot();
