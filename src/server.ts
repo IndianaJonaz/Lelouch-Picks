@@ -11,7 +11,7 @@ import { ParseError } from './parse.ts';
 import type { Resolver } from './resolve.ts';
 import { deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
 import { importSlip, isFinalStatus, type FinalStatus } from './importer.ts';
-import { boardView, healthView, liveView, newsView, slipImageRef, slipView, type Ctx } from './views.ts';
+import { boardView, healthView, liveView, newsView, profitSeries, slipImageRef, slipView, type Ctx } from './views.ts';
 import type { SlipImage } from './bot.ts';
 import { dayInTz } from './util.ts';
 import { Headlines } from './news.ts';
@@ -256,6 +256,7 @@ export function createServer(deps: ServerDeps) {
       if (p === '/api/board') return send(req, res, 200, boardView(ctx, url.searchParams.get('period') ?? 'all'));
       if (p === '/api/news') { const [n, headlines_] = await Promise.all([newsView(ctx), headlines.get()]); return send(req, res, 200, { ...n, headlines: headlines_ }); }
       if (p === '/api/health') return send(req, res, 200, healthView(ctx));
+      if (p === '/api/profit') return send(req, res, 200, profitSeries(ctx, url.searchParams.get('user')));
       const im = p.match(/^\/api\/slips\/([A-Za-z0-9]+)\/image$/);
       if (im && (req.method === 'GET' || req.method === 'HEAD')) return slipImage(req, res, im[1].toUpperCase());
       const sm = p.match(/^\/api\/slips\/([A-Za-z0-9]+)$/);

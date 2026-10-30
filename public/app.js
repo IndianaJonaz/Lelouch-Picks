@@ -2,6 +2,8 @@
 'use strict';
 const $app = document.getElementById('app');
 const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false, newsTab: 'sports' };
+const LS = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
+S.bookF = LS.get('lhq.bookFilter', 'all'); S.sportF = LS.get('lhq.sportFilter', 'all'); S.pgOpen = LS.get('lhq.profitOpen', '1') === '1'; S.pgHidden = new Set(); S.pgFocus = null;
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const u = (n) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);
@@ -44,6 +46,8 @@ document.addEventListener('click', (e) => {
   if (a && !e.metaKey && !e.ctrlKey) { e.preventDefault(); history.pushState(null, '', a.getAttribute('href')); go(); window.scrollTo({ top: 0 }); }
 });
 addEventListener('popstate', () => go());
+let wasNarrow = innerWidth < 600, rsT = null; // profit graph picks its viewBox by width: redraw when crossing the breakpoint
+addEventListener('resize', () => { clearTimeout(rsT); rsT = setTimeout(() => { const n = innerWidth < 600; if (n !== wasNarrow) { wasNarrow = n; if (S.view === 'board') render(); } }, 150); });
 
 async function boot() {
   try { S.me = await api('/api/me'); } catch { S.me = { authed: false }; }
@@ -59,6 +63,9 @@ async function load(view) {
     if (view === 'news') {
       const [n, h] = await Promise.all([api('/api/news'), api('/api/health')]);
       S.data.news = n; S.data.health = h;
+    } else if (view === 'board') {
+      const [b, pr] = await Promise.all([api(path), api('/api/profit').catch(() => S.data.profit ?? null)]);
+      S.data.board = b; S.data.profit = pr;
     } else S.data[view] = await api(path);
     S.at[view] = Date.now(); S.err[view] = null;
   } catch (e) { if (e.message !== 'signed out') S.err[view] = e.message; }
@@ -101,6 +108,20 @@ function render() {
   document.getElementById('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); S.es?.close(); S.es = null; S.me.authed = false; S.data = {}; render(); };
   $app.querySelectorAll('[data-period]').forEach((b) => (b.onclick = () => { S.period = b.dataset.period; load('board'); }));
   $app.querySelectorAll('[data-more]').forEach((b) => (b.onclick = () => { S.allRecent = true; render(); }));
+  $app.querySelectorAll('[data-bookf]').forEach((b) => (b.onclick = () => { S.bookF = b.dataset.bookf; LS.set('lhq.bookFilter', S.bookF); render(); }));
+  $app.querySelectorAll('[data-sportf]').forEach((b) => (b.onclick = () => { S.sportF = b.dataset.sportf; LS.set('lhq.sportFilter', S.sportF); render(); }));
+  $app.querySelectorAll('[data-pgtog]').forEach((b) => (b.onclick = () => { S.pgOpen = !S.pgOpen; LS.set('lhq.profitOpen', S.pgOpen ? '1' : '0'); render(); }));
+  // Chip: 1st tap highlights that line, 2nd tap hides it, 3rd tap shows it again.
+  $app.querySelectorAll('[data-pgchip]').forEach((b) => (b.onclick = () => {
+    const id = b.dataset.pgchip;
+    if (S.pgHidden.has(id)) S.pgHidden.delete(id); else if (S.pgFocus === id) { S.pgHidden.add(id); S.pgFocus = null; } else S.pgFocus = id;
+    render();
+  }));
+  $app.querySelectorAll('[data-pguser]').forEach((r) => (r.onclick = () => {
+    const id = r.dataset.pguser; S.pgHidden.delete(id); S.pgFocus = S.pgFocus === id ? null : id;
+    if (!S.pgOpen) { S.pgOpen = true; LS.set('lhq.profitOpen', '1'); }
+    render(); document.querySelector('.pg')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }));
   $app.querySelectorAll('[data-img]').forEach((r) => {
     r.onclick = () => openSlipImage(r.dataset.img, r);
     r.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSlipImage(r.dataset.img, r); } };
@@ -259,6 +280,68 @@ function slipCard(s) {
   return `<div class="card slip">${hd}${miniLegs(s)}${s.note ? `<div class="note">“${esc(s.note)}”</div>` : ''}
     <div class="slip-ft"><span>Stake <b>${u(s.stake)}</b></span><span>Odds <b>${esc(s.oddsText || '—')}</b></span><span>${s.status === 'open' ? 'To win' : 'Result'} <b class="${s.status === 'open' ? '' : cls(s.profit)}">${s.status === 'open' ? u(s.toWin) : s.status === 'review' ? 'needs review' : u(s.profit)}</b></span></div></div>`;
 }
+// ---------- open slips: book + sport filter tabs ----------
+const BOOKS = [['all', 'All'], ['prizepicks', 'PrizePicks'], ['kalshi', 'Kalshi'], ['other', 'Other']];
+const SPORTS = [['all', 'All'], ['nba', 'NBA'], ['mlb', 'MLB'], ['wnba', 'WNBA'], ['tennis', 'Tennis'], ['nfl', 'NFL'], ['nbl', 'NBL']];
+const byBook = (k) => (s) => k === 'all' || (s.bookKey ?? 'other') === k;
+const bySport = (k) => (s) => k === 'all' || (s.sports ?? []).includes(k);
+function viewOpenSlips(open) {
+  if (!BOOKS.some(([k]) => k === S.bookF)) S.bookF = 'all';
+  if (!SPORTS.some(([k]) => k === S.sportF)) S.sportF = 'all';
+  const shown = open.filter(byBook(S.bookF)).filter(bySport(S.sportF));
+  const tabs = (list, cur, attr, count) => `<div class="ftabs" role="tablist">${list.map(([k, l]) => `<button role="tab" aria-selected="${cur === k}" ${attr}="${k}" class="${cur === k ? 'on' : ''}">${l}<span class="n">${count(k)}</span></button>`).join('')}</div>`;
+  const bookTabs = tabs(BOOKS, S.bookF, 'data-bookf', (k) => open.filter(bySport(S.sportF)).filter(byBook(k)).length);
+  const sportTabs = tabs(SPORTS, S.sportF, 'data-sportf', (k) => open.filter(byBook(S.bookF)).filter(bySport(k)).length);
+  const label = [S.bookF !== 'all' ? BOOKS.find(([k]) => k === S.bookF)[1] : '', S.sportF !== 'all' ? SPORTS.find(([k]) => k === S.sportF)[1] : ''].filter(Boolean).join(' · ');
+  const body = !open.length ? `<div class="card empty"><b>No open slips</b>Use /pick in Discord to post one.</div>`
+    : shown.length ? `<div class="grid g3">${shown.map(slipCard).join('')}</div>`
+    : `<div class="card empty"><b>No open ${esc(label)} slips</b>Try another tab, or pick All.</div>`;
+  return `<section class="sec"><div class="sec-head"><h2>Open slips</h2><span class="count">${shown.length === open.length ? open.length : `${shown.length} of ${open.length}`}</span></div>
+    <div class="filters">${bookTabs}${sportTabs}</div>${body}</section>`;
+}
+
+// ---------- profit over time: every member's cumulative profit as step lines (inline SVG) ----------
+const PG_COLORS = ['#f2c94c', '#ff4d5e', '#3ddc97', '#4fc3f7', '#ff9f43', '#e879f9', '#a3e635', '#f8fafc', '#fb7185', '#22d3ee', '#fde047', '#c4b5fd'];
+const pgMoney = (n) => `${n < 0 ? '-' : n > 0 ? '+' : ''}$${Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+const axisMoney = (n) => `${n < 0 ? '-' : ''}$${Math.abs(n).toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+function niceStep(range) { const raw = range / 5, p = 10 ** Math.floor(Math.log10(raw || 1)), f = raw / p; return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p; }
+function viewProfitGraph(pr) {
+  const head = `<div class="sec-head"><h2>Profit over time</h2><span class="count">cumulative $ by member · settled slips</span><span class="spacer" style="flex:1"></span><button class="pg-tog" data-pgtog aria-expanded="${S.pgOpen}">${S.pgOpen ? 'Hide' : 'Show'}</button></div>`;
+  if (!S.pgOpen) return `<section class="sec pg">${head}</section>`;
+  const users = (pr?.users ?? []).map((u, i) => ({ ...u, color: PG_COLORS[i % PG_COLORS.length] }));
+  if (!pr) return `<section class="sec pg">${head}<div class="card empty">Loading…</div></section>`;
+  if (!users.length) return `<section class="sec pg">${head}<div class="card empty"><b>No settled slips yet</b>The graph fills in as slips grade.</div></section>`;
+  const narrow = innerWidth < 600, W = narrow ? 360 : 720, H = narrow ? 240 : 260, L = narrow ? 50 : 58, R = 12, T = 12, B = 28; // viewBox ≈ CSS px so labels stay legible
+  const ts = (p) => Date.parse(p.t.endsWith('Z') ? p.t : p.t + 'Z');
+  const all = users.flatMap((u) => u.points.map(ts));
+  let t0 = Math.min(...all), t1 = Math.max(...all);
+  if (t1 - t0 < 86400_000) { t0 -= 43200_000; t1 += 43200_000; } // 1 point / same day: give the x axis some width
+  const vals = [0, ...users.flatMap((u) => u.points.map((p) => p.cum))];
+  let lo = Math.min(...vals), hi = Math.max(...vals);
+  if (hi - lo < 1) { hi += 5; lo -= 5; }
+  const step = niceStep(hi - lo); lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step;
+  const x = (t) => L + ((t - t0) / (t1 - t0)) * (W - L - R), y = (v) => T + ((hi - v) / (hi - lo)) * (H - T - B);
+  let grid = '';
+  for (let v = lo; v <= hi + 1e-9; v += step) grid += `<line class="${Math.abs(v) < 1e-9 ? 'zero' : 'gl'}" x1="${L}" x2="${W - R}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/><text class="yl" x="${L - 8}" y="${(y(v) + 4).toFixed(1)}">${axisMoney(v)}</text>`;
+  const days = Math.max(1, Math.round((t1 - t0) / 86400_000)), every = Math.max(1, Math.ceil(days / 4));
+  const start = new Date(t0); start.setHours(0, 0, 0, 0);
+  for (let d = new Date(start), i = 0; d.getTime() <= t1; d.setDate(d.getDate() + 1), i++) {
+    if (i % every || d.getTime() < t0) continue;
+    grid += `<text class="xl" x="${x(d.getTime()).toFixed(1)}" y="${H - 8}">${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</text>`;
+  }
+  const focus = S.pgFocus && users.some((u) => u.userId === S.pgFocus) ? S.pgFocus : null;
+  const lines = users.filter((u) => !S.pgHidden.has(u.userId)).map((u) => {
+    let px = x(Math.min(...u.points.map(ts))), py = y(0), d = `M${px.toFixed(1)},${py.toFixed(1)}`;
+    for (const p of u.points) { const nx = x(ts(p)), ny = y(p.cum); d += `H${nx.toFixed(1)}V${ny.toFixed(1)}`; px = nx; py = ny; } // step-after
+    const dim = focus && focus !== u.userId ? ' dim' : '';
+    const dots = u.points.map((p) => `<circle class="hit" cx="${x(ts(p)).toFixed(1)}" cy="${y(p.cum).toFixed(1)}" r="7"><title>${esc(u.user)} · ${new Date(ts(p)).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}${p.approxTime ? ' (logged)' : ''} · #${esc(p.slipId)} ${esc(p.status)} ${pgMoney(p.delta)} → ${pgMoney(p.cum)}</title></circle>`).join('');
+    return `<g class="pg-line${dim}" style="--c:${u.color}"><path d="${d}"/><circle class="end" cx="${px.toFixed(1)}" cy="${py.toFixed(1)}" r="4.5"/>${dots}</g>`;
+  }).join('');
+  const chips = users.map((u) => `<button class="pg-chip${S.pgHidden.has(u.userId) ? ' off' : ''}${focus === u.userId ? ' on' : ''}" data-pgchip="${esc(u.userId)}" style="--c:${u.color}" aria-pressed="${!S.pgHidden.has(u.userId)}"><i></i>${esc(u.user)}${u.demo ? ' <span class="chip demo">DEMO</span>' : ''} <b class="${cls(u.profit)}">${pgMoney(u.profit)}</b></button>`).join('');
+  return `<section class="sec pg">${head}<div class="card pg-card"><svg class="pg-svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Cumulative profit by member">${grid}${lines}</svg>
+    <div class="pg-legend">${chips}</div><div class="pg-hint dim">Tap a name to highlight · tap again to hide · tap a point for details</div></div></section>`;
+}
+
 function viewBoard() {
   const d = S.data.board;
   const head = `<div class="page-head"><div><h1>The Board</h1><p>Open slips, tonight’s poster, results and who’s actually up.</p></div></div>`;
@@ -276,13 +359,14 @@ function viewBoard() {
       ${miniLegs(p).replace('class="mini-legs"', 'class="mini-legs" style="padding:0"')}
       <div class="meta"><span>Stake <b>${u(p.stake)}</b></span><span>Odds <b>${esc(p.oddsText)}</b></span><span>To win <b class="pos">${u(p.toWin)}</b></span>${p.firstStart ? `<span>First leg <b>${esc(fmtTime(p.firstStart))}</b></span>` : ''}</div></div></div></section>`;
   }
-  html += `<section class="sec"><div class="sec-head"><h2>Open slips</h2><span class="count">${d.open.length}</span></div>${d.open.length ? `<div class="grid g3">${d.open.map(slipCard).join('')}</div>` : `<div class="card empty"><b>No open slips</b>Use /pick in Discord to post one.</div>`}</section>`;
+  html += viewOpenSlips(d.open);
+  html += viewProfitGraph(S.data.profit);
   const periods = [['all', 'All time'], ['30d', '30 days'], ['7d', '7 days'], ['today', 'Today']];
   const lb = d.leaderboard;
   const maxAbs = Math.max(1, ...lb.map((x) => Math.abs(x.profit)));
-  html += `<section class="sec"><div class="sec-head"><h2>Leaderboard</h2><span class="count">ranked by profit, not volume</span><span class="spacer" style="flex:1"></span><div class="seg">${periods.map(([k, l]) => `<button data-period="${k}" class="${d.period === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+  html += `<section class="sec"><div class="sec-head"><h2>Leaderboard · Holiday Season ❄️💸</h2><span class="count">ranked by profit, not volume</span><span class="spacer" style="flex:1"></span><div class="seg">${periods.map(([k, l]) => `<button data-period="${k}" class="${d.period === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="card scroll-x">${lb.length ? `<table class="lb"><thead><tr><th>#</th><th>Member</th><th>Profit</th><th>Record</th><th>ROI</th><th class="hm">Risked</th><th class="hm">Form</th></tr></thead><tbody>
-    ${lb.map((r) => `<tr><td class="rk">${r.rank}</td><td><div class="u">${av(r.user)}${esc(r.user)}${r.demo ? ' <span class="chip demo">DEMO</span>' : ''}</div></td>
+    ${lb.map((r) => `<tr data-pguser="${esc(r.userId)}" class="${S.pgFocus === r.userId ? 'pg-on' : ''}" title="Show on profit graph"><td class="rk">${r.rank}</td><td><div class="u">${av(r.user)}${esc(r.user)}${r.demo ? ' <span class="chip demo">DEMO</span>' : ''}</div></td>
       <td class="num"><span class="pbar"><i style="width:${(Math.abs(r.profit) / maxAbs * 100).toFixed(0)}%;background:${r.profit >= 0 ? 'var(--win)' : 'var(--loss)'}"></i></span><b class="${cls(r.profit)}">${u(r.profit)}</b></td>
       <td class="num">${r.w}-${r.l}${r.p ? '-' + r.p : ''}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td><td class="num hm muted">${u(r.staked)}</td>
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
