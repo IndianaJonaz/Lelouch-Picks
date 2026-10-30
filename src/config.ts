@@ -39,6 +39,8 @@ export const config = {
   slipChannelIds: (env.DISCORD_SLIP_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   pollLiveMs: Number(env.POLL_LIVE_MS || 15000),
   pollIdleMs: Number(env.POLL_IDLE_MS || 60000),
+  // Optional Postgres (e.g. Neon) URL: when set, the SQLite DB is snapshotted there and restored on boot. Never logged.
+  databaseUrl: env.DATABASE_URL || '',
   isTest: env.NODE_ENV === 'test',
 };
 

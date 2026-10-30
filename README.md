@@ -50,6 +50,9 @@ curl -X POST $URL/api/admin/slips -H "authorization: Bearer $ADMIN_TOKEN" -H 'co
   -d '{"user":"Lelouch","text":"GB -3.5; CAR/GB u46.5","odds":264,"stake":1,"hidden":false}'
 curl $URL/api/admin/key -H "authorization: Bearer $ADMIN_TOKEN"
 # also: POST /api/admin/rotate-key {"revokeSessions":true}, POST /api/admin/slips/:id/{reveal|poster|settle}
+# backup / restore the whole SQLite DB (raw bytes):
+curl $URL/api/admin/export -H "authorization: Bearer $ADMIN_TOKEN" -o picks-backup.db
+curl -X POST $URL/api/admin/import -H "authorization: Bearer $ADMIN_TOKEN" -H 'content-type: application/octet-stream' --data-binary @picks-backup.db
 ```
 
 ## Environment variables
@@ -61,6 +64,7 @@ curl $URL/api/admin/key -H "authorization: Bearer $ADMIN_TOKEN"
 | `PUBLIC_URL` | | `http://localhost:$PORT` | Used in `/dashboard` replies and embed links. `https://` turns on `Secure` cookies. |
 | `GROUP_TZ` | | `America/Chicago` | Sets when the key rotates and what counts as "tonight". |
 | `DATABASE_PATH` | | `./data/picks.db` | Use `/data/picks.db` with a Railway volume. |
+| `DATABASE_URL` | | unset | Optional Postgres URL (e.g. Neon, `?sslmode=require`). When set, the SQLite DB is snapshotted into table `app_snapshot` (~5 s after writes settle, at most every 60 s under constant writes, and on SIGTERM/SIGINT) and restored from it on boot — so ephemeral disks (Render free plan) don't lose slips. Unset = SQLite only, as before. Never logged. |
 | `LEAGUES` | | `nba,nfl,nhl,mlb,ncaaf,ncaab,wnba` | Leagues searched when a pick doesn't name one. |
 | `DISCORD_BOT_TOKEN` | for bot | | Bot → Reset Token. |
 | `DISCORD_APP_ID` | for CLI register | | General Information → Application ID. |

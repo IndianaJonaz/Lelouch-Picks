@@ -12,6 +12,8 @@ import { importSlip, isFinalStatus, type FinalStatus } from './importer.ts';
 import { boardView, healthView, liveView, newsView, slipView, type Ctx } from './views.ts';
 import { dayInTz } from './util.ts';
 import { Headlines } from './news.ts';
+import { importInto, snapshotBytes, type Snapshotter } from './persist.ts';
+import { openDb } from './db.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -59,6 +61,12 @@ function cookies(req: http.IncomingMessage): Record<string, string> {
   return out;
 }
 
+async function rawBody(req: http.IncomingMessage, limit: number): Promise<Buffer> {
+  let size = 0; const chunks: Buffer[] = [];
+  for await (const c of req) { size += c.length; if (size > limit) throw new SlipError(`upload too large (max ${limit / 1024 / 1024} MB)`); chunks.push(c as Buffer); }
+  return Buffer.concat(chunks);
+}
+
 async function body(req: http.IncomingMessage, limit = 64 * 1024): Promise<any> {
   let size = 0; const chunks: Buffer[] = [];
   for await (const c of req) { size += c.length; if (size > limit) throw new Error('body too large'); chunks.push(c as Buffer); }
@@ -68,7 +76,7 @@ async function body(req: http.IncomingMessage, limit = 64 * 1024): Promise<any> 
   return Object.fromEntries(new URLSearchParams(s));
 }
 
-export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminToken: string; publicUrl: string; groupName: string; onSlipCreated?: () => void; headlines?: Headlines }
+export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminToken: string; publicUrl: string; groupName: string; onSlipCreated?: () => void; headlines?: Headlines; snapshots?: Snapshotter | null }
 
 export function createServer(deps: ServerDeps) {
   const { ctx, auth } = deps;
@@ -188,6 +196,22 @@ export function createServer(deps: ServerDeps) {
           broadcast('tick', { at: Date.now(), changed: 1 });
           const full = slipWithLegs(ctx.db, m[1])!;
           return send(req, res, 200, slipView(full.slip, full.legs, ctx));
+        }
+        // Full raw SQLite snapshot (consistent copy) — backup / move between hosts.
+        if (p === '/api/admin/export' && req.method === 'GET') {
+          const data = snapshotBytes(ctx.db);
+          res.writeHead(200, { 'content-type': 'application/octet-stream', 'content-length': String(data.length), 'cache-control': 'no-store',
+            'content-disposition': `attachment; filename="picks-hq-${dayInTz(new Date(), ctx.tz)}.db"`, ...SEC_HEADERS }).end(data);
+          return;
+        }
+        // Replace all data with an uploaded SQLite file (raw bytes body). Validated + all-or-nothing.
+        if (p === '/api/admin/import' && req.method === 'POST') {
+          const data = await rawBody(req, 50 * 1024 * 1024);
+          let r: { tables: Record<string, number> };
+          try { r = importInto(ctx.db, data, openDb); } catch (e) { throw new SlipError(`Import rejected: ${(e as Error).message}`); }
+          const saved = deps.snapshots ? await deps.snapshots.saveNow() : null;
+          broadcast('tick', { at: Date.now(), changed: 1 });
+          return send(req, res, 200, { ok: true, bytes: data.length, tables: r.tables, snapshotSaved: saved });
         }
         return send(req, res, 404, { error: 'not found' });
       }
