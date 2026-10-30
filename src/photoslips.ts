@@ -5,7 +5,7 @@ import { DuplicateSlipError, findDuplicate, importSlip, sha256 } from './importe
 import type { Resolver } from './resolve.ts';
 import {
   blankSlip, checkSlip, extractSlips, isKalshi, legMissing, legsToText, normalizeRead, textToLegs, toImport, VisionError,
-  type Extraction, type XaiOpts,
+  type Extraction, type ExtractedLeg, type XaiOpts,
 } from './slipvision.ts';
 import { ParseError } from './parse.ts';
 import { SlipError } from './store.ts';
@@ -144,6 +144,45 @@ export async function confirmDraft(ctx: Ctx, resolver: Resolver, id: string, now
     if (e instanceof ParseError || e instanceof SlipError) return { kind: 'blocked', missing: [e.message] };
     throw e;
   }
+}
+
+const LEAGUE_PREFIX: Record<string, string> = {
+  nba: 'NBA', nbap: 'NBA', wnba: 'WNBA', nfl: 'NFL', nflp: 'NFL', nhl: 'NHL', nhlp: 'NHL',
+  mlb: 'MLB', mlbp: 'MLB', ncaaf: 'NCAAF', cfb: 'NCAAF', ncaab: 'NCAAB', cbb: 'NCAAB',
+};
+function leaguePrefix(tag: string | null): string {
+  if (!tag) return '';
+  const v = LEAGUE_PREFIX[tag.toLowerCase().replace(/[^a-z]/g, '')];
+  return v ? `${v} ` : '';
+}
+
+/** One confirm-card leg as text the /pick parser understands. Null when it isn't an ESPN leg (Kalshi, or unreadable). */
+export function extractedLegLine(x: Extraction, l: ExtractedLeg): string | null {
+  if (isKalshi(x)) return null;
+  const prefix = leaguePrefix(l.league);
+  const who = `${(l.player ?? '').trim()}${l.team ? ` (${l.team})` : ''}`.trim();
+  if (l.direction && l.line != null && l.stat && who) {
+    return `${prefix}${who} ${l.direction === 'over' ? 'o' : 'u'}${l.line} ${l.stat}`;
+  }
+  if (/money\s*line|\bml\b/i.test(`${l.stat ?? ''} ${l.player ?? ''}`)) {
+    const name = (l.team || l.player || '').trim();
+    return name ? `${prefix}${name} ML` : null;
+  }
+  if (l.line != null && l.direction && l.matchup && !who) {
+    const parts = l.matchup.replace(/\d+/g, ' ').split(/\s*(?:@|vs\.?|v\.?)\s*/i).map((s) => s.trim()).filter(Boolean);
+    if (parts.length >= 2) return `${prefix}${parts[0]}/${parts[1]} ${l.direction === 'over' ? 'o' : 'u'}${l.line}`;
+  }
+  if (l.line != null && !l.direction) {
+    const name = (l.team || l.player || '').trim();
+    if (!name) return null;
+    return `${prefix}${name} ${l.line > 0 ? '+' : ''}${l.line}`;
+  }
+  return null;
+}
+
+/** Lines to rate for a confirm card, in printed order. Empty string = that leg can't be read. */
+export function draftLegLines(d: Draft): string[] {
+  return d.x.legs.map((l) => extractedLegLine(d.x, l) ?? '');
 }
 
 const RES_ICON: Record<string, string> = { won: '✅', lost: '❌', push: '➖', void: '⚪', pending: '⏳' };

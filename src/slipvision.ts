@@ -127,6 +127,28 @@ async function callXai(image: Uint8Array, mime: string, userText: string, o: Xai
   catch { throw new VisionError('model output was not JSON'); }
 }
 
+/** Plain chat completion on the same xAI client as slip vision. The key stays in the Authorization header and is never logged. */
+export async function completeText(system: string, user: string, o: XaiOpts): Promise<string> {
+  if (!o.apiKey) throw new VisionError('XAI_API_KEY not set');
+  const model = o.model || DEFAULT_XAI_MODEL;
+  const f = o.fetch ?? fetch;
+  const r = await f(XAI_URL, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${o.apiKey}` },
+    body: JSON.stringify({
+      model, temperature: 0.2, max_tokens: 180,
+      messages: [{ role: 'system', content: system }, { role: 'user', content: user }],
+    }),
+    signal: AbortSignal.timeout(o.timeoutMs ?? 12_000),
+  });
+  if (!r.ok) throw new VisionError(`xAI HTTP ${r.status}`);
+  let j: any;
+  try { j = JSON.parse(await r.text()); } catch { throw new VisionError('xAI returned non-JSON'); }
+  const content = j?.choices?.[0]?.message?.content;
+  if (typeof content !== 'string' || !content.trim()) throw new VisionError('xAI response had no content');
+  return content.trim();
+}
+
 /** Why a read looks incomplete (drives the single focused re-read). */
 export function readProblems(read: any): string[] {
   const out: string[] = [];
