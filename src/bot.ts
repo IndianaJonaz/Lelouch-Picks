@@ -135,6 +135,20 @@ const UNSUPPORTED_REPLY = (mime: string) => /heic|heif/i.test(mime)
   ? '📷 iPhone HEIC photos can’t be read yet — please send a screenshot (PNG) or a JPG of the slip.'
   : `📷 I can only read PNG or JPG slip images (that one was ${mime || 'unknown'}).`;
 
+/** The /pick modal shown when no legs are given. Labels must stay within Discord's 45-char limit. */
+export function pickModal(opts: { stake: number; odds: number | null; hidden: boolean; title: string | null; note: string | null }): ModalBuilder {
+  const m = new ModalBuilder().setCustomId(`pick:${opts.hidden ? 1 : 0}`).setTitle(opts.hidden ? 'New hidden slip' : 'New slip');
+  const ti = (id: string, label: string, style: TextInputStyle, req: boolean, ph: string, val?: string) => new ActionRowBuilder<TextInputBuilder>().addComponents(new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(req).setPlaceholder(ph).setValue(val ?? ''));
+  m.addComponents(
+    ti('legs', 'Legs — one per line', TextInputStyle.Paragraph, true, 'Jokic o10.5 reb\nGB -3.5\nCAR/GB u47.5\nJosh Jacobs anytime td (+110)'),
+    ti('stake', 'Stake ($)', TextInputStyle.Short, true, '1', String(opts.stake)),
+    ti('odds', 'Slip odds (American, optional)', TextInputStyle.Short, false, '+450', opts.odds != null ? String(opts.odds) : undefined),
+    ti('title', 'Title (optional)', TextInputStyle.Short, false, 'TNF sweat', opts.title ?? undefined),
+    ti('note', 'Write-up (optional)', TextInputStyle.Paragraph, false, 'Why I like it', opts.note ?? undefined),
+  );
+  return m;
+}
+
 export class Bot {
   status: { status: string; detail: string | null; tag: string | null } = { status: 'idle', detail: 'DISCORD_BOT_TOKEN not set — bot disabled, web app running', tag: null };
   private client: Client | null = null;
@@ -220,16 +234,7 @@ export class Bot {
     const legs = i.options.getString('legs');
     const opts = { stake: i.options.getNumber('stake') ?? 1, odds: i.options.getInteger('odds'), hidden: !!i.options.getBoolean('hidden'), title: i.options.getString('title'), note: i.options.getString('note') };
     if (!legs) {
-      const m = new ModalBuilder().setCustomId(`pick:${opts.hidden ? 1 : 0}`).setTitle(opts.hidden ? 'New hidden slip' : 'New slip');
-      const ti = (id: string, label: string, style: TextInputStyle, req: boolean, ph: string, val?: string) => new ActionRowBuilder<TextInputBuilder>().addComponents(new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(req).setPlaceholder(ph).setValue(val ?? ''));
-      m.addComponents(
-        ti('legs', 'Legs — one per line', TextInputStyle.Paragraph, true, 'Jokic o10.5 reb\nGB -3.5\nCAR/GB u47.5\nJosh Jacobs anytime td (+110)'),
-        ti('stake', 'Stake (dollars)', TextInputStyle.Short, true, '1', String(opts.stake)),
-        ti('odds', 'Slip odds (American) — or put odds on each leg', TextInputStyle.Short, false, '+450', opts.odds != null ? String(opts.odds) : undefined),
-        ti('title', 'Title (optional)', TextInputStyle.Short, false, 'TNF sweat', opts.title ?? undefined),
-        ti('note', 'Write-up (optional)', TextInputStyle.Paragraph, false, 'Why I like it', opts.note ?? undefined),
-      );
-      return i.showModal(m);
+      return i.showModal(pickModal(opts));
     }
     await i.deferReply({ ephemeral: opts.hidden });
     await this.finishPick(i, legs, opts);
