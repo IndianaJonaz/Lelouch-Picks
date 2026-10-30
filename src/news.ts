@@ -69,7 +69,7 @@ export function parseRss(xml: string, feed: Pick<FeedDef, 'id' | 'name'>, limit 
 
 export type Fetcher = (url: string, signal: AbortSignal) => Promise<string>;
 const httpFetch: Fetcher = async (url, signal) => {
-  const r = await fetch(url, { signal, redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; PICKS-HQ/1.0; +rss)', accept: 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5' } });
+  const r = await fetch(url, { signal, redirect: 'follow', headers: { 'user-agent': 'Mozilla/5.0 (compatible; Lelouch-HQ/1.0; +rss)', accept: 'application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.5' } });
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   const text = await r.text();
   if (text.length > 3_000_000) throw new Error('feed too large');

@@ -12,7 +12,7 @@ import { hasDemo, seedDemo } from './demo.ts';
 import type { Ctx } from './views.ts';
 import { pgSnapshotStore, restoreSnapshot, Snapshotter, type SnapshotStore } from './persist.ts';
 
-const GROUP = process.env.GROUP_NAME || 'PICKS HQ';
+const GROUP = process.env.GROUP_NAME || 'Lelouch HQ';
 // Optional Postgres snapshot persistence (DATABASE_URL). Restore BEFORE opening SQLite.
 let store: SnapshotStore | null = null;
 let restored = -1; // -1 = persistence off / unknown, 0 = no snapshot yet, >0 = bytes restored
@@ -46,7 +46,7 @@ const resolver = new Resolver(espn);
 
 let bot: Bot | null = null;
 const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, demo: config.demo, bot: () => bot?.status ?? { status: 'idle', detail: 'not started', tag: null } };
-bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP,
+bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP, nickname: config.botNickname,
   vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds });
 
 const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP, snapshots });

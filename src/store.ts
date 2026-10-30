@@ -21,7 +21,7 @@ export function validateOdds(o: number | null | undefined) {
 export function createSlip(db: DatabaseSync, s: NewSlip, legs: ResolvedLeg[]): Slip {
   if (!legs.length) throw new SlipError('A slip needs at least one leg.');
   if (legs.length > 25) throw new SlipError('Max 25 legs per slip.');
-  if (!(s.stake > 0 && s.stake <= 1000)) throw new SlipError('Stake must be between 0 and 1000 units.');
+  if (!(s.stake > 0 && s.stake <= 1000)) throw new SlipError('Stake must be between 0 and 1000 dollars.');
   validateOdds(s.odds);
   legs.forEach((l) => validateOdds(l.odds));
   const odds = s.odds ?? null;

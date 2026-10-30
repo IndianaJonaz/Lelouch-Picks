@@ -1,4 +1,4 @@
-# PICKS HQ
+# Lelouch HQ
 
 A Discord bot plus a live web dashboard for a group that posts sports picks. People post slips in Discord, the
 server grades every leg from real ESPN box scores, and the dashboard shows live games with pace bars, the board,
@@ -20,7 +20,7 @@ a leaderboard ranked by profit, injury notes and the health of each data feed.
 | **Grading** | Legs grade when the game ends. Overs cash, and unders bust, as soon as the line is passed. Whole-number lines can push. A DNP or a postponed game voids the leg. Parlays re-price when a leg pushes or voids. If the price can't be known, the slip goes to **review** (`/settle`) so the bot never invents a number. NFL players missing from the box score also go to review, because ESPN leaves out players with zero stats. |
 | **Hidden picks** | `/pick hidden:true`. The legs are removed server-side in one place (`src/views.ts`) and never reach any API, SSE message, injury lookup or error text. The channel only sees "🔒 hidden 3-leg slip". The legs are revealed by `/reveal`, or automatically when the slip settles so the record stays honest. |
 | **Live** | Score, clock and every public leg. Prop and total legs get a pace bar with a projected-finish marker, and spreads and moneylines show "Covering by 4.5". You can switch to see all of today's games. |
-| **The Board** | Group stats, tonight's poster (pinned by an admin or picked automatically), open slips, recent results, and a leaderboard by **profit in units** with record, ROI, amount risked and last-10 form (All, 30d, 7d, Today). |
+| **The Board** | Group stats, tonight's poster (pinned by an admin or picked automatically), open slips, recent results, and a leaderboard by **profit in dollars** with record, ROI, amount risked and last-10 form (All, 30d, 7d, Today). |
 | **News & health** | ESPN injury notes for players on public open slips, plus Out/Questionable notes for teams on game-line legs. Status for the DB, the grading engine and Discord, and for each ESPN feed: last answer, latency, ok/total calls, last error. |
 | **Auth** | The access key is `PHQ-XXXX-XXXX`, derived with an HMAC from `APP_SECRET` and the date in `GROUP_TZ`, so it changes automatically every day. `/rotatekey` changes it immediately and can also sign everyone out. "Keep me signed in" gives a 30-day HttpOnly cookie; otherwise the session ends when the browser closes. Failed logins are limited to 10 per 10 minutes per IP. |
 | **Speed** | The ESPN client caches responses in memory (live games 12–15 s, scoreboards 60 s, injuries 10 min, rosters 12 h) and merges duplicate in-flight requests. Static assets are brotli/gzip-compressed ahead of time and served with ETags. Updates reach the browser over SSE (with a polling fallback), and the engine polls every 15 s while a game is live or about to start and every 60 s otherwise. |
@@ -71,7 +71,8 @@ curl -X POST $URL/api/admin/import -H "authorization: Bearer $ADMIN_TOKEN" -H 'c
 | `DISCORD_GUILD_ID` | recommended | | Registers commands to your server instantly. Without it they're global and can take up to an hour. |
 | `DISCORD_ADMIN_ROLE_IDS` | | | Comma-separated role IDs. Members with Manage Server always count as admins. |
 | `ADMIN_TOKEN` | | | Turns on the admin HTTP API. |
-| `GROUP_NAME` | | `PICKS HQ` | Shown in bot embeds. |
+| `GROUP_NAME` | | `Lelouch HQ` | Shown in bot embeds. |
+| `BOT_NICKNAME` | | `Lelouch HQ` | Server nickname set on ready in each guild. Does not change the global bot username. If Change Nickname is missing, the bot logs a warning and continues. |
 | `DEMO_MODE` | | `0` | `1` seeds the labelled demo data and writes the key file. |
 | `POLL_LIVE_MS` / `POLL_IDLE_MS` | | `15000` / `60000` | Grading engine poll intervals. |
 | `XAI_API_KEY` | for screenshots | | Turns on reading slip screenshots posted in Discord (xAI vision). Unset = feature off. |
@@ -176,4 +177,4 @@ Admin import (same path): `POST /api/admin/slips` with `{user, userId?, text, st
   cache refreshes. Pass the team hint (`Name (TEAM)`) to narrow the search.
 * The dates the resolver searches are based on `GROUP_TZ`, but ESPN's scoreboard days are roughly US Eastern. Late
   West Coast games still resolve because the search covers 7 days.
-* Odds and stakes are whatever members enter. Profit is in units, and nothing connects to a sportsbook.
+* Odds and stakes are whatever members enter. Profit is shown in dollars, and nothing connects to a sportsbook.

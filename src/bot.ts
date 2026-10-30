@@ -20,13 +20,13 @@ const BRAND = 0xc8102e; // Geass theme: Britannia crimson
 const WON = 0xd4af37; // imperial gold
 const LOST = 0x8b0000; // deep blood crimson
 const ICON: Record<string, string> = { pending: '⏳', won: '✅', lost: '❌', push: '➖', void: '⚪', review: '🔎', open: '🟣' };
-const units = (n: number | null | undefined) => (n == null ? '—' : `${n > 0 ? '+' : ''}${n.toFixed(2)}u`);
+export const units = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);
 const bar = (pct: number | null, width = 10) => { const n = Math.round(Math.max(0, Math.min(1, pct ?? 0)) * width); return '▰'.repeat(n) + '▱'.repeat(width - n); };
 
 export const commands = [
   new SlashCommandBuilder().setName('pick').setDescription('Post a slip (leave legs empty to open a multi-line form)')
     .addStringOption((o) => o.setName('legs').setDescription('e.g. "Jokic o10.5 reb; GB -3.5; CAR/GB u47.5" — separate legs with ;'))
-    .addNumberOption((o) => o.setName('stake').setDescription('Units risked (default 1)').setMinValue(0.01).setMaxValue(1000))
+    .addNumberOption((o) => o.setName('stake').setDescription('Dollars risked (default 1)').setMinValue(0.01).setMaxValue(1000))
     .addIntegerOption((o) => o.setName('odds').setDescription('American odds for the whole slip, e.g. 450 or -110'))
     .addBooleanOption((o) => o.setName('hidden').setDescription('Keep the legs hidden until you /reveal (or it settles)'))
     .addStringOption((o) => o.setName('title').setDescription('Optional name, e.g. "TNF sweat"').setMaxLength(60))
@@ -36,7 +36,7 @@ export const commands = [
   new SlashCommandBuilder().setName('slip').setDescription('Show one slip').addStringOption((o) => o.setName('id').setDescription('Slip id').setRequired(true)),
   new SlashCommandBuilder().setName('live').setDescription('Live games with every public leg and pace bars'),
   new SlashCommandBuilder().setName('board').setDescription('Open slips, tonight’s poster, recent results'),
-  new SlashCommandBuilder().setName('leaderboard').setDescription('Ranked by profit (units), not volume')
+  new SlashCommandBuilder().setName('leaderboard').setDescription('Ranked by profit (dollars), not volume')
     .addStringOption((o) => o.setName('period').setDescription('Window').addChoices({ name: 'All time', value: 'all' }, { name: 'Last 30 days', value: '30d' }, { name: 'Last 7 days', value: '7d' }, { name: 'Today', value: 'today' })),
   new SlashCommandBuilder().setName('dashboard').setDescription('Get the dashboard link and today’s access key (only you see it)'),
   new SlashCommandBuilder().setName('reveal').setDescription('Reveal one of your hidden slips').addStringOption((o) => o.setName('id').setDescription('Slip id').setRequired(true)),
@@ -45,13 +45,51 @@ export const commands = [
   new SlashCommandBuilder().setName('settle').setDescription('Admin: manually settle a slip that needs review')
     .addStringOption((o) => o.setName('id').setDescription('Slip id').setRequired(true))
     .addStringOption((o) => o.setName('result').setDescription('Result').setRequired(true).addChoices({ name: 'won', value: 'won' }, { name: 'lost', value: 'lost' }, { name: 'push', value: 'push' }, { name: 'void', value: 'void' }))
-    .addNumberOption((o) => o.setName('profit').setDescription('Profit in units (negative for a loss)').setRequired(true)),
+    .addNumberOption((o) => o.setName('profit').setDescription('Profit in dollars (negative for a loss)').setRequired(true)),
   new SlashCommandBuilder().setName('rotatekey').setDescription('Admin: rotate today’s dashboard key now')
     .addBooleanOption((o) => o.setName('signout').setDescription('Also sign out every dashboard session')),
 ].map((c) => c.toJSON());
 
+/** Enough of a guild for the ready-time nickname step. Real discord.js guilds satisfy this. */
+export interface GuildNickTarget {
+  id: string;
+  name: string;
+  members: {
+    me: NickMember | null;
+    fetchMe: () => Promise<NickMember>;
+  };
+}
+interface NickMember {
+  nickname: string | null;
+  permissions: { has: (permission: bigint) => boolean };
+  setNickname: (nick: string) => Promise<unknown>;
+}
+
+/**
+ * Set the bot's nickname in each guild. Never touches the global username.
+ * Missing Change Nickname, or any Discord error, is logged and skipped.
+ */
+export async function applyGuildNicknames(guilds: Iterable<GuildNickTarget>, nickname?: string | null): Promise<void> {
+  const nick = (nickname ?? '').trim().slice(0, 32) || 'Lelouch HQ';
+  for (const guild of guilds) {
+    try {
+      const me = guild.members.me ?? await guild.members.fetchMe();
+      if (!me?.permissions.has(PermissionFlagsBits.ChangeNickname)) {
+        console.warn(`[bot] nickname skipped in ${guild.name}: missing Change Nickname`);
+        continue;
+      }
+      if (me.nickname === nick) continue;
+      await me.setNickname(nick);
+    } catch (e) {
+      console.warn(`[bot] nickname skipped in ${guild.id}: ${(e as Error).message}`);
+    }
+  }
+}
+
 export interface BotDeps {
   ctx: Ctx; auth: Auth; resolver: Resolver; engine: Engine; token: string; guildId: string; adminRoles: string[]; publicUrl: string; groupName: string;
+  /** Server nickname applied on ready. Defaults to "Lelouch HQ". Not the global username. */
+  nickname?: string;
   /** Screenshot reading (xAI). null = feature off. */
   vision?: XaiOpts | null;
   /** Only read screenshots in these channels (or threads under them). Empty = any channel the bot can see. */
@@ -72,8 +110,7 @@ export function botIntents(visionOn: boolean): GatewayIntentBits[] {
 export function ticketEmbed(v: ReturnType<typeof slipView>, publicUrl: string, tz: string): APIEmbed {
   const t = v.ticket;
   if (!t) return { color: BRAND, title: `🔒 Hidden slip · #${v.id}` };
-  const money = (n: number | null | undefined) => (n == null ? '—' : `$${n.toFixed(2)}`);
-  const net = t.net == null ? '' : ` · net ${t.net > 0 ? '+' : t.net < 0 ? '−' : ''}${money(Math.abs(t.net))}`;
+  const net = t.net == null ? '' : ` · net ${units(t.net)}`;
   const badge = [t.book ? `**${t.book.toUpperCase()}**` : null, t.playBadge ? `\`${t.playBadge}\`` : null, t.isTest ? '`TEST`' : null].filter(Boolean).join('  ');
   const color = v.status === 'won' ? WON : v.status === 'lost' ? LOST : v.status === 'review' ? 0xf59e0b : v.status === 'open' ? BRAND : 0x94a3b8;
   const rows = v.legs.map((l) => `${ICON[l.status] ?? '•'} ${l.ticketText}${l.actual != null ? ` — **${l.actual}**` : ''} · _${l.statusWord}_`);
@@ -81,7 +118,7 @@ export function ticketEmbed(v: ReturnType<typeof slipView>, publicUrl: string, t
   return {
     color, url: `${publicUrl}/slip/${v.id}`,
     author: { name: badge.replace(/[*`]/g, '') || 'Slip' },
-    title: `${money(t.risk)} → ${money(t.pays)}   ·   #${v.id}`,
+    title: `${units(t.risk)} → ${units(t.pays)}   ·   #${v.id}`,
     description: [
       `${badge}`,
       `${t.sports.join(' / ')} · ${t.legCount} leg${t.legCount === 1 ? '' : 's'} · **${t.hits}/${t.legCount} HIT**`,
@@ -117,6 +154,8 @@ export class Bot {
         else await c.application.commands.set(commands);
         console.log(`[bot] ready as ${c.user.tag}; ${commands.length} commands registered ${this.d.guildId ? 'to guild ' + this.d.guildId : 'globally'}`);
       } catch (e) { console.error('[bot] command registration failed', e); this.status.detail += ' · command registration failed: ' + (e as Error).message; }
+      try { await applyGuildNicknames(c.guilds.cache.values(), this.d.nickname); }
+      catch (e) { console.warn(`[bot] nickname step failed: ${(e as Error).message}`); }
     });
     client.on(Events.InteractionCreate, (i) => this.onInteraction(i).catch((e) => console.error('[bot] interaction error', e)));
     if (this.d.vision) {
@@ -185,7 +224,7 @@ export class Bot {
       const ti = (id: string, label: string, style: TextInputStyle, req: boolean, ph: string, val?: string) => new ActionRowBuilder<TextInputBuilder>().addComponents(new TextInputBuilder().setCustomId(id).setLabel(label).setStyle(style).setRequired(req).setPlaceholder(ph).setValue(val ?? ''));
       m.addComponents(
         ti('legs', 'Legs — one per line', TextInputStyle.Paragraph, true, 'Jokic o10.5 reb\nGB -3.5\nCAR/GB u47.5\nJosh Jacobs anytime td (+110)'),
-        ti('stake', 'Stake (units)', TextInputStyle.Short, true, '1', String(opts.stake)),
+        ti('stake', 'Stake (dollars)', TextInputStyle.Short, true, '1', String(opts.stake)),
         ti('odds', 'Slip odds (American) — or put odds on each leg', TextInputStyle.Short, false, '+450', opts.odds != null ? String(opts.odds) : undefined),
         ti('title', 'Title (optional)', TextInputStyle.Short, false, 'TNF sweat', opts.title ?? undefined),
         ti('note', 'Write-up (optional)', TextInputStyle.Paragraph, false, 'Why I like it', opts.note ?? undefined),
@@ -220,7 +259,7 @@ export class Bot {
     const legs = getLegs(this.d.ctx.db, slip.id);
     await i.editReply({ embeds: [this.slipEmbed(slip, legs, o.hidden ? '🔒 Hidden slip saved (only you can see this)' : undefined, true)] });
     if (o.hidden && i.channel && 'send' in i.channel) {
-      await (i.channel as any).send({ content: `🔒 **${slip.user_name}** locked in a hidden ${legs.length}-leg slip (\`${slip.id}\`, ${slip.stake}u). Legs stay hidden until revealed.` }).catch(() => {});
+      await (i.channel as any).send({ content: `🔒 **${slip.user_name}** locked in a hidden ${legs.length}-leg slip (\`${slip.id}\`, ${units(slip.stake)}). Legs stay hidden until revealed.` }).catch(() => {});
     }
   }
 
@@ -345,10 +384,10 @@ export class Bot {
       .setAuthor({ name: `${slip.user_name}${slip.is_demo ? ' · DEMO' : ''}` })
       .setTitle(`${header ? header + ' · ' : ''}${slip.title ?? `${legs.length}-leg slip`} · ${slip.id}`)
       .setURL(this.d.publicUrl + '/board');
-    if (!pub) e.setDescription(`🔒 ${legs.length} hidden leg(s) · ${slip.stake}u`);
+    if (!pub) e.setDescription(`🔒 ${legs.length} hidden leg(s) · ${units(slip.stake)}`);
     else e.setDescription(v.legs.map((l) => `${ICON[l.status]} ${l.text}${l.oddsText ? ` (${l.oddsText})` : ''}${l.actual != null ? ` — **${l.actual}**` : ''} · ${l.event?.name ?? ''}`).join('\n') + (slip.note ? `\n\n> ${slip.note}` : ''));
     e.addFields(
-      { name: 'Stake', value: `${slip.stake}u`, inline: true },
+      { name: 'Stake', value: `${units(slip.stake)}`, inline: true },
       { name: 'Odds', value: fmtOdds(v.odds) || '—', inline: true },
       { name: slip.status === 'open' ? 'To win' : 'Result', value: slip.status === 'open' ? units(v.toWin) : `${ICON[slip.status]} ${slip.status} ${units(slip.profit)}`, inline: true },
     );
@@ -359,8 +398,8 @@ export class Bot {
     const u = i.options.getUser('user');
     const b = boardView(this.d.ctx, 'all');
     const open = b.open.filter((s) => !u || s.userId === u.id).slice(0, 15);
-    const lines = open.map((s) => s.hidden ? `🔒 **${s.user}** · \`${s.id}\` · ${s.legCount} hidden leg(s) · ${s.stake}u`
-      : `🟣 **${s.user}** · \`${s.id}\` · ${s.legs.map((l) => `${ICON[l.status]}${l.text}`).join(', ')} · ${s.stake}u → ${units(s.toWin)}`);
+    const lines = open.map((s) => s.hidden ? `🔒 **${s.user}** · \`${s.id}\` · ${s.legCount} hidden leg(s) · ${units(s.stake)}`
+      : `🟣 **${s.user}** · \`${s.id}\` · ${s.legs.map((l) => `${ICON[l.status]}${l.text}`).join(', ')} · ${units(s.stake)} → ${units(s.toWin)}`);
     await i.reply({ embeds: [new EmbedBuilder().setColor(BRAND).setTitle(`Open slips${u ? ' · ' + u.username : ''} (${open.length})`).setDescription(lines.join('\n').slice(0, 4000) || 'No open slips.').setURL(this.d.publicUrl + '/board')] });
   }
 
@@ -392,8 +431,8 @@ export class Bot {
   private async cmdBoard(i: ChatInputCommandInteraction) {
     const b = boardView(this.d.ctx, 'all');
     const e = new EmbedBuilder().setColor(BRAND).setTitle(`${this.d.groupName} · The Board`).setURL(this.d.publicUrl + '/board');
-    if (b.poster) e.addFields({ name: `📌 Tonight’s poster${b.poster.pinned ? '' : ' (auto)'} — ${b.poster.user}`, value: b.poster.legs.map((l: any) => `${ICON[l.status]} ${l.text}`).join('\n').slice(0, 1000) + `\n${b.poster.stake}u @ ${b.poster.oddsText} → ${units(b.poster.toWin)}` });
-    e.addFields({ name: `Open slips (${b.open.length})`, value: b.open.slice(0, 6).map((s) => s.hidden ? `🔒 ${s.user} · ${s.legCount} legs` : `🟣 ${s.user} · ${s.legCount} legs · ${s.stake}u @ ${s.oddsText}`).join('\n') || '—' });
+    if (b.poster) e.addFields({ name: `📌 Tonight’s poster${b.poster.pinned ? '' : ' (auto)'} — ${b.poster.user}`, value: b.poster.legs.map((l: any) => `${ICON[l.status]} ${l.text}`).join('\n').slice(0, 1000) + `\n${units(b.poster.stake)} @ ${b.poster.oddsText} → ${units(b.poster.toWin)}` });
+    e.addFields({ name: `Open slips (${b.open.length})`, value: b.open.slice(0, 6).map((s) => s.hidden ? `🔒 ${s.user} · ${s.legCount} legs` : `🟣 ${s.user} · ${s.legCount} legs · ${units(s.stake)} @ ${s.oddsText}`).join('\n') || '—' });
     e.addFields({ name: 'Recent results', value: b.recent.slice(0, 6).map((s) => `${ICON[s.status]} ${s.user} · ${s.title ?? s.legCount + ' legs'} · ${units(s.profit)}`).join('\n') || '—' });
     e.addFields({ name: 'Top 5 (profit)', value: b.leaderboard.slice(0, 5).map((u) => `**${u.rank}.** ${u.user} ${units(u.profit)} · ${u.w}-${u.l}-${u.p}`).join('\n') || '—' });
     await i.reply({ embeds: [e] });
@@ -404,7 +443,7 @@ export class Bot {
     const lb = leaderboard(this.d.ctx, period);
     const medal = ['🥇', '🥈', '🥉'];
     const lines = lb.slice(0, 20).map((u) => `${medal[u.rank - 1] ?? `**${u.rank}.**`} ${u.user} · **${units(u.profit)}** · ${u.w}-${u.l}-${u.p} · ROI ${u.roi}%${u.streak ? ' · ' + u.streak : ''}`);
-    await i.reply({ embeds: [new EmbedBuilder().setColor(BRAND).setTitle(`Leaderboard · ${({ all: 'All time', '30d': 'Last 30 days', '7d': 'Last 7 days', today: 'Today' } as any)[period]}`).setDescription(lines.join('\n') || 'No settled slips yet.').setFooter({ text: 'Ranked by profit in units, not volume' }).setURL(this.d.publicUrl + '/board')] });
+    await i.reply({ embeds: [new EmbedBuilder().setColor(BRAND).setTitle(`Leaderboard · ${({ all: 'All time', '30d': 'Last 30 days', '7d': 'Last 7 days', today: 'Today' } as any)[period]}`).setDescription(lines.join('\n') || 'No settled slips yet.').setFooter({ text: 'Ranked by profit in dollars, not volume' }).setURL(this.d.publicUrl + '/board')] });
   }
 
   private async announce(e: SettledEvent) {

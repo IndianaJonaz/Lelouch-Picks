@@ -39,7 +39,7 @@ test('slip validation: odds required, stake bounds, American odds sanity', async
   const l2 = await r.resolve('MIA -3.5', opts);
   const u = { user_id: 'u1', user_name: 'Lelouch' };
   assert.throws(() => createSlip(db, { ...u, stake: 1 }, [l1, l2]), SlipError);
-  assert.throws(() => createSlip(db, { ...u, stake: 0, odds: 200 }, [l1]), SlipError);
+  assert.throws(() => createSlip(db, { ...u, stake: 0, odds: 200 }, [l1]), (err: unknown) => err instanceof SlipError && (err as Error).message === 'Stake must be between 0 and 1000 dollars.');
   assert.throws(() => createSlip(db, { ...u, stake: 1, odds: 50 }, [l1]), SlipError);
   const s = createSlip(db, { ...u, stake: 1, odds: -110 }, [l1]);
   assert.equal(s.odds, -110);

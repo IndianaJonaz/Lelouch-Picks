@@ -1,6 +1,6 @@
 {
-  "name": "PICKS HQ",
-  "short_name": "PICKS HQ",
+  "name": "Lelouch HQ",
+  "short_name": "Lelouch",
   "description": "Your group's picks, live.",
   "start_url": "/board",
   "scope": "/",
