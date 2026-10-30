@@ -272,3 +272,25 @@ a.nws-t:hover{color:var(--gold2)}
 ::selection{background:rgba(200,16,46,.55);color:#fff}
 a:focus-visible,button:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
 .toast{border-color:rgba(212,175,55,.35)}
+
+/* ---------- win card (won slips only) ---------- */
+.win-card-btn{flex:none;align-self:center;min-height:36px;padding:7px 12px;border-radius:999px;font-size:12px;font-weight:800;letter-spacing:.03em;color:#0b0b0d;background:linear-gradient(135deg,#f2c94c,#d4af37 55%,#a8832a);border:1px solid rgba(242,201,76,.85);box-shadow:0 6px 16px -10px rgba(212,175,55,.9);touch-action:manipulation}
+.win-card-btn:hover{filter:brightness(1.06)}
+.win-card-btn:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
+.sp-win{display:flex;justify-content:flex-end;margin:-4px 0 14px}
+.sp-win .win-card-btn{min-height:44px;padding:10px 16px;font-size:14px}
+.wc-modal{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));background:rgba(5,4,6,.78)}
+.wc-panel{width:min(440px,100%);max-height:100%;overflow:auto;-webkit-overflow-scrolling:touch;overscroll-behavior:contain;background:linear-gradient(180deg,#1b141c,#141016);border:1px solid rgba(212,175,55,.35);border-radius:18px;padding:14px 14px 16px;box-shadow:0 24px 70px rgba(0,0,0,.55)}
+.wc-hd{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.wc-title{flex:1;font-size:13px;font-weight:800;letter-spacing:.12em;text-transform:uppercase;color:var(--gold)}
+.wc-x{width:44px;height:44px;border-radius:12px;font-size:26px;line-height:1;color:var(--tx2)}
+.wc-x:hover{background:rgba(200,16,46,.12);color:var(--gold2)}
+.wc-status{padding:28px 12px;text-align:center;color:var(--tx2);font-size:14px}
+.wc-img{display:block;width:100%;height:auto;border-radius:12px;background:#0b0b0d;-webkit-touch-callout:default}
+.wc-bar{display:flex;gap:8px;margin-top:12px}
+.wc-bar[hidden],.wc-img[hidden],.wc-status[hidden],.wc-share[hidden]{display:none !important}
+.wc-bar .btn{width:auto;flex:1;min-height:44px;padding:12px 10px}
+.wc-bar .wc-save{background:transparent;color:var(--gold2);border:1px solid rgba(212,175,55,.5);box-shadow:none}
+.wc-bar .wc-save:hover:not(:disabled){background:rgba(212,175,55,.12);color:var(--gold2);box-shadow:none}
+.wc-note{margin:8px 0 0;text-align:center;font-size:12px;color:var(--tx3);min-height:0}
+.wc-note:empty{display:none}
