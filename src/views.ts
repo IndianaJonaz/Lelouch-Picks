@@ -65,12 +65,50 @@ function publicLeg(l: Leg, ctx: Ctx) {
   };
 }
 
+/**
+ * Where a slip's screenshot lives on Discord, if it came from one. We never store the image — only this pointer.
+ * Photo imports save channel_id + message_id; older rows may only have the message link in source_url.
+ * /pick slips have a channel but no message id, so they return null.
+ */
+export function slipImageRef(slip: Pick<Slip, 'channel_id' | 'message_id' | 'source_url'>): { channelId: string; messageId: string } | null {
+  if (slip.channel_id && slip.message_id) return { channelId: slip.channel_id, messageId: slip.message_id };
+  const m = slip.source_url?.match(/^https:\/\/(?:\w+\.)?discord(?:app)?\.com\/channels\/(?:\d+|@me)\/(\d+)\/(\d+)\/?$/);
+  return m ? { channelId: m[1], messageId: m[2] } : null;
+}
+
+// ---------- Open-slip filters (book / sport buckets) ----------
+export type BookBucket = 'prizepicks' | 'kalshi' | 'other';
+const norm = (v: string | null | undefined) => String(v ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+/** Book tab for a slip: PrizePicks ("PrizePicks", "prize picks", "PP"), Kalshi, or Other (anything else, incl. unknown / /pick). */
+export function bookBucket(book: string | null | undefined, legLeagues: (string | null | undefined)[] = []): BookBucket {
+  const b = norm(book);
+  if (b === 'prizepicks' || b === 'pp') return 'prizepicks';
+  if (b === 'kalshi' || (!b && legLeagues.some((l) => norm(l) === 'kalshi'))) return 'kalshi';
+  return 'other';
+}
+export const SPORT_TABS = ['nba', 'mlb', 'wnba', 'tennis', 'nfl', 'nbl'] as const;
+const SPORT_ALIAS: Record<string, string> = { nbap: 'nba', nba1h: 'nba', nba1q: 'nba', mlbp: 'mlb', nflp: 'nfl', nfl1h: 'nfl', wnbap: 'wnba', atp: 'tennis', wta: 'tennis', ten: 'tennis', tennisp: 'tennis' };
+/**
+ * Sports on a slip, from each leg's league (ESPN key for resolved legs, or the screenshot's tag like "TENNIS"/"NBL").
+ * Lowercase, de-duplicated; a multi-sport slip lists every sport. Unknown/blank leagues are skipped.
+ */
+export function slipSports(legLeagues: (string | null | undefined)[]): string[] {
+  const out = new Set<string>();
+  for (const l of legLeagues) { const k = norm(l); if (k && k !== 'other' && k !== 'kalshi') out.add(SPORT_ALIAS[k] ?? k); }
+  return [...out];
+}
+
 export function slipView(slip: Slip, legs: Leg[], ctx: Ctx) {
   const pub = isPublic(slip);
   const base = {
     id: slip.id, user: slip.user_name, userId: slip.user_id, title: slip.title, stake: slip.stake, status: slip.status, profit: slip.profit,
     createdAt: slip.created_at, settledAt: slip.settled_at, demo: !!slip.is_demo, test: !!slip.is_test, hidden: !pub, wasHidden: !!slip.hidden, book: slip.book,
     legCount: legs.length,
+    /** Screenshot slip whose image can be fetched from Discord on demand (never for hidden slips or /pick entries). */
+    hasImage: pub && !!slipImageRef(slip),
+    bookKey: bookBucket(slip.book, pub ? legs.map((l) => l.league) : []),
+    /** Hidden slips expose no sport (it would hint at the legs); they only show under "All". */
+    sports: pub ? slipSports(legs.map((l) => l.league)) : [] as string[],
     progress: { won: legs.filter((l) => l.status === 'won').length, lost: legs.filter((l) => l.status === 'lost').length, pending: legs.filter((l) => l.status === 'pending').length },
   };
   if (!pub) return { ...base, progress: { won: 0, lost: 0, pending: legs.length }, odds: null, oddsText: '', toWin: null, note: null, legs: [] as ReturnType<typeof publicLeg>[], ticket: null as ReturnType<typeof ticket> | null, firstStart: null };
@@ -153,6 +191,26 @@ export function leaderboard(ctx: Ctx, period: string) {
   });
   list.sort((a, b) => b.profit - a.profit || b.roi - a.roi || a.user.localeCompare(b.user));
   return list.map((u, i) => ({ rank: i + 1, ...u }));
+}
+
+// ---------- Profit over time ----------
+export interface ProfitPoint { t: string; slipId: string; status: string; delta: number; cum: number; approxTime: boolean }
+/**
+ * Cumulative profit per member from settled, non-test slips, ordered by settle time (created time when a row has no
+ * settled_at — flagged approxTime). Pushes/voids add a 0-change point. Grouped by Discord user id, latest display name.
+ */
+export function profitSeries(ctx: Ctx, userId?: string | null) {
+  const rows = ctx.db.prepare(`SELECT id, user_id, user_name, status, profit, is_demo, settled_at, created_at, coalesce(settled_at, created_at) AS t FROM slips
+    WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND is_test = 0 ${userId ? 'AND user_id = ?' : ''} ORDER BY t, id`).all(...(userId ? [userId] : [])) as any[];
+  const m = new Map<string, { userId: string; user: string; demo: boolean; profit: number; points: ProfitPoint[] }>();
+  for (const r of rows) {
+    const u = m.get(r.user_id) ?? { userId: r.user_id, user: r.user_name, demo: !!r.is_demo, profit: 0, points: [] as ProfitPoint[] };
+    const delta = r.status === 'won' || r.status === 'lost' ? round2(r.profit) : 0;
+    u.user = r.user_name; u.profit = round2(u.profit + delta);
+    u.points.push({ t: r.t, slipId: r.id, status: r.status, delta, cum: u.profit, approxTime: !r.settled_at });
+    m.set(r.user_id, u);
+  }
+  return { asOf: Date.now(), users: [...m.values()].sort((a, b) => b.profit - a.profit || a.user.localeCompare(b.user)) };
 }
 
 export function boardView(ctx: Ctx, period: string) {

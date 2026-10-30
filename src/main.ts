@@ -49,7 +49,8 @@ const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, dem
 bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP, nickname: config.botNickname,
   vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds });
 
-const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP, snapshots });
+const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP, snapshots,
+  slipImage: (channelId, messageId) => bot?.slipImage(channelId, messageId) ?? Promise.resolve(null) });
 server.listen(config.port, () => console.log(`[web] ${GROUP} listening on http://localhost:${config.port}  (public URL ${config.publicUrl})`));
 
 // Demo key file (path only is ever logged; value is written to disk for local preview)

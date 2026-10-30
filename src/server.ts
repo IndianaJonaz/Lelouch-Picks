@@ -1,4 +1,6 @@
 import http from 'node:http';
+import { Readable, Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
 import { readFileSync, readdirSync, statSync, watch } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -7,9 +9,10 @@ import type { Auth } from './auth.ts';
 import { ROOT } from './config.ts';
 import { ParseError } from './parse.ts';
 import type { Resolver } from './resolve.ts';
-import { deleteSlip, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
+import { deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
 import { importSlip, isFinalStatus, type FinalStatus } from './importer.ts';
-import { boardView, healthView, liveView, newsView, slipView, type Ctx } from './views.ts';
+import { boardView, healthView, liveView, newsView, profitSeries, slipImageRef, slipView, type Ctx } from './views.ts';
+import type { SlipImage } from './bot.ts';
 import { dayInTz } from './util.ts';
 import { Headlines } from './news.ts';
 import { importInto, snapshotBytes, type Snapshotter } from './persist.ts';
@@ -76,7 +79,11 @@ async function body(req: http.IncomingMessage, limit = 64 * 1024): Promise<any> 
   return Object.fromEntries(new URLSearchParams(s));
 }
 
-export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminToken: string; publicUrl: string; groupName: string; onSlipCreated?: () => void; headlines?: Headlines; snapshots?: Snapshotter | null }
+export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminToken: string; publicUrl: string; groupName: string; onSlipCreated?: () => void; headlines?: Headlines; snapshots?: Snapshotter | null;
+  /** Re-fetch a slip screenshot from its saved Discord message (Bot.slipImage). Absent = bot off, no images. */
+  slipImage?: (channelId: string, messageId: string) => Promise<SlipImage | null>;
+  /** HTTP client for the Discord CDN (tests inject a fake). */
+  imageFetch?: typeof fetch }
 
 export function createServer(deps: ServerDeps) {
   const { ctx, auth } = deps;
@@ -126,6 +133,33 @@ export function createServer(deps: ServerDeps) {
     for (const r of sse) r.write(msg);
   }
   setInterval(() => { for (const r of sse) r.write(`: ping ${Date.now()}\n\n`); }, 25_000).unref();
+
+  const MAX_SLIP_IMAGE = 20 * 1024 * 1024;
+  /** Stream a slip's screenshot straight from Discord. Nothing is written to disk or the DB; the CDN url is never logged. */
+  const slipImage = async (req: http.IncomingMessage, res: http.ServerResponse, id: string) => {
+    const slip = slipWithLegs(ctx.db, id)?.slip;
+    if (!slip) return send(req, res, 404, { error: 'no such slip' });
+    const ref = isPublic(slip) ? slipImageRef(slip) : null;
+    if (!ref) return send(req, res, 404, { error: 'This slip has no screenshot (it was entered with /pick).' });
+    const gone = () => send(req, res, 404, { error: 'Image no longer available on Discord.' });
+    const img = deps.slipImage ? await deps.slipImage(ref.channelId, ref.messageId).catch(() => null) : null;
+    if (!img) return gone();
+    let r: Response;
+    try { r = await (deps.imageFetch ?? fetch)(img.url, { signal: AbortSignal.timeout(15_000) }); }
+    catch (e) { console.warn(`[image] slip ${slip.id}: CDN fetch failed (${(e as Error).name})`); return gone(); }
+    const type = (r.headers.get('content-type') ?? img.contentType).split(';')[0].trim().toLowerCase();
+    const len = Number(r.headers.get('content-length') ?? 0);
+    if (!r.ok || !r.body || !type.startsWith('image/') || type.includes('svg') || len > MAX_SLIP_IMAGE) {
+      console.warn(`[image] slip ${slip.id}: CDN responded ${r.status}`);
+      await r.body?.cancel().catch(() => {});
+      return gone();
+    }
+    res.writeHead(200, { ...SEC_HEADERS, 'content-type': type, 'cache-control': 'private, max-age=300', ...(len && !r.headers.get('content-encoding') ? { 'content-length': String(len) } : {}) });
+    if (req.method === 'HEAD') { await r.body.cancel().catch(() => {}); res.end(); return; }
+    let sent = 0;
+    const cap = new Transform({ transform(chunk: Buffer, _enc, cb) { sent += chunk.length; cb(sent > MAX_SLIP_IMAGE ? new Error('image too large') : null, chunk); } });
+    await pipeline(Readable.fromWeb(r.body as any), cap, res).catch(() => { res.destroy(); });
+  };
 
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url ?? '/', 'http://x');
@@ -222,6 +256,9 @@ export function createServer(deps: ServerDeps) {
       if (p === '/api/board') return send(req, res, 200, boardView(ctx, url.searchParams.get('period') ?? 'all'));
       if (p === '/api/news') { const [n, headlines_] = await Promise.all([newsView(ctx), headlines.get()]); return send(req, res, 200, { ...n, headlines: headlines_ }); }
       if (p === '/api/health') return send(req, res, 200, healthView(ctx));
+      if (p === '/api/profit') return send(req, res, 200, profitSeries(ctx, url.searchParams.get('user')));
+      const im = p.match(/^\/api\/slips\/([A-Za-z0-9]+)\/image$/);
+      if (im && (req.method === 'GET' || req.method === 'HEAD')) return slipImage(req, res, im[1].toUpperCase());
       const sm = p.match(/^\/api\/slips\/([A-Za-z0-9]+)$/);
       if (sm) { const s = slipWithLegs(ctx.db, sm[1].toUpperCase()); return s ? send(req, res, 200, slipView(s.slip, s.legs, ctx)) : send(req, res, 404, { error: 'no such slip' }); }
       if (p === '/api/stream') {

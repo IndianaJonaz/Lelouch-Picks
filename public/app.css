@@ -275,3 +275,65 @@ a.nws-t:hover{color:var(--gold2)}
 ::selection{background:rgba(200,16,46,.55);color:#fff}
 a:focus-visible,button:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
 .toast{border-color:rgba(212,175,55,.35)}
+
+/* ---------- recent results: screenshot rows + Geass lightbox ---------- */
+.res.has-img{cursor:pointer;transition:background .15s,box-shadow .15s}
+.res.has-img:hover,.res.has-img:focus-visible{background:rgba(212,175,55,.07);box-shadow:inset 3px 0 0 var(--gold);outline:none}
+.res .img-ic{display:grid;place-items:center;flex:none;color:var(--gold);opacity:.75}
+.res.has-img:hover .img-ic{opacity:1;color:var(--gold2)}
+body.lbx-open{overflow:hidden}
+.lbx{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));background:radial-gradient(800px 500px at 50% 40%,rgba(139,0,0,.38),rgba(0,0,0,.9) 70%);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);animation:lbx-in .18s ease-out}
+@keyframes lbx-in{from{opacity:0}}
+.lbx-box{position:relative;width:min(560px,100%);max-height:100%;display:flex;flex-direction:column;background:linear-gradient(160deg,#2a0710,#0b0b0d 60%);border:1px solid var(--gold);border-radius:18px;box-shadow:0 0 0 1px rgba(200,16,46,.4),0 24px 60px -10px rgba(0,0,0,.8),0 0 40px -10px rgba(200,16,46,.7);overflow:hidden}
+.lbx-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px 10px 16px;border-bottom:1px solid var(--line2);font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx2)}
+.lbx-head b{color:var(--gold2)}
+.lbx-x{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;font-size:16px;color:var(--gold);border:1px solid var(--line2)}
+.lbx-x:hover{background:rgba(200,16,46,.2);color:var(--gold2)}
+.lbx-body{overflow:auto;-webkit-overflow-scrolling:touch;display:grid;place-items:center;min-height:200px}
+.lbx-body img{display:block;max-width:100%;max-height:calc(100dvh - 120px);height:auto;margin:0 auto}
+.lbx-state{display:grid;justify-items:center;gap:12px;padding:40px 24px;text-align:center;color:var(--tx2);font-size:14px}
+.lbx-state.err b{color:var(--loss);font-size:15px}
+@media (max-width:560px){.lbx{padding:10px}.lbx-box{border-radius:14px}}
+
+/* ---------- open slips: book + sport filter tabs ---------- */
+.filters{display:grid;gap:8px;margin:-2px 0 14px}
+.ftabs{display:flex;gap:6px;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;padding:2px}
+.ftabs::-webkit-scrollbar{display:none}
+.ftabs button{flex:none;display:inline-flex;align-items:center;gap:7px;padding:7px 13px;border-radius:999px;font-size:13px;font-weight:600;color:var(--tx2);background:rgba(255,255,255,.03);border:1px solid var(--line);transition:color .15s,border-color .15s,background .15s}
+.ftabs button:hover{color:var(--gold2);border-color:var(--line2)}
+.ftabs button.on{color:#0b0b0d;background:var(--gold-grad);border-color:var(--gold);box-shadow:0 4px 16px -6px rgba(212,175,55,.6)}
+.ftabs .n{font:700 11px var(--mono);min-width:18px;padding:1px 6px;border-radius:999px;background:rgba(200,16,46,.22);color:var(--gold2);text-align:center}
+.ftabs button.on .n{background:rgba(11,11,13,.82);color:var(--gold2)}
+.ftabs+.ftabs button{padding:5px 11px;font-size:12px}
+
+/* ---------- profit over time ---------- */
+.pg-tog{font-size:12px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--gold);padding:6px 10px;border-radius:9px;border:1px solid var(--line2)}
+.pg-tog:hover{background:rgba(200,16,46,.12);color:var(--gold2)}
+.pg-card{padding:14px 12px 12px;background:radial-gradient(500px 220px at 30% 0,rgba(200,16,46,.14),transparent 70%),var(--card)}
+.pg-svg{display:block;width:100%;height:auto;overflow:visible;touch-action:manipulation}
+.pg-svg .gl{stroke:rgba(212,175,55,.12);stroke-width:1}
+.pg-svg .zero{stroke:rgba(212,175,55,.55);stroke-width:1.2;stroke-dasharray:4 4}
+.pg-svg .yl{fill:var(--gold);font:600 11px var(--mono);text-anchor:end;opacity:.85}
+.pg-svg .xl{fill:var(--gold);font:600 11px Inter,system-ui,sans-serif;text-anchor:middle;opacity:.85}
+.pg-line path{fill:none;stroke:var(--c);stroke-width:2.4;stroke-linejoin:round;filter:drop-shadow(0 0 3px rgba(0,0,0,.6))}
+.pg-line .end{fill:var(--c);stroke:#0b0b0d;stroke-width:1.5}
+.pg-line .hit{fill:transparent;cursor:pointer}
+.pg-line .hit:hover{fill:var(--c);fill-opacity:.35}
+.pg-line.dim{opacity:.18}
+.pg-legend{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.pg-chip{display:inline-flex;align-items:center;gap:8px;padding:7px 12px;border-radius:999px;font-size:13px;font-weight:600;background:rgba(255,255,255,.035);border:1px solid var(--line);color:var(--tx)}
+.pg-chip i{width:11px;height:11px;border-radius:3px;background:var(--c);flex:none}
+.pg-chip b{font-family:var(--mono);font-size:12.5px}
+.pg-chip b.pos{color:#3ddc97}.pg-chip b.neg{color:var(--loss)}
+.pg-chip:hover{border-color:var(--line2)}
+.pg-chip.on{border-color:var(--gold);box-shadow:0 0 0 1px rgba(212,175,55,.35),0 0 14px -4px rgba(212,175,55,.6)}
+.pg-chip.off{opacity:.4}.pg-chip.off i{background:transparent;box-shadow:inset 0 0 0 1.5px var(--c)}
+.pg-hint{font-size:11.5px;margin-top:10px}
+.lb tbody tr[data-pguser]{cursor:pointer}
+.lb tbody tr[data-pguser]:hover{background:rgba(212,175,55,.06)}
+.lb tbody tr.pg-on{box-shadow:inset 0 0 0 1px rgba(212,175,55,.45)}
+@media (max-width:560px){.pg-card{padding:10px 6px 10px}.pg-chip{font-size:12.5px;padding:6px 10px}}
+
+/* ---------- holiday banner: sits at the top of the leaderboard, under the profit graph ---------- */
+.hol-banner{margin:0 0 14px;padding:11px 18px;text-align:center;font-size:15px;font-weight:700;letter-spacing:.06em;line-height:1.35;color:var(--gold2);background:radial-gradient(480px 80px at 50% 120%,rgba(200,16,46,.5),transparent 72%),linear-gradient(90deg,rgba(139,0,0,.62),rgba(42,7,16,.4) 20%,rgba(11,11,13,.2) 50%,rgba(42,7,16,.4) 80%,rgba(139,0,0,.62));border:1px solid rgba(212,175,55,.6);border-radius:999px;box-shadow:0 0 0 1px rgba(200,16,46,.4),0 10px 28px -14px rgba(200,16,46,.85),inset 0 0 22px rgba(212,175,55,.1);text-shadow:0 0 14px rgba(242,201,76,.4)}
+@media (max-width:560px){.hol-banner{font-size:13px;letter-spacing:.03em;padding:10px 12px}}

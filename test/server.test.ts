@@ -58,7 +58,7 @@ test('API requires sign-in; wrong key rejected; right key sets HttpOnly cookie; 
   const sess = await post('/api/login', { key: auth.keyFor(), remember: false });
   assert.doesNotMatch(sess.headers.get('set-cookie')!, /Max-Age/);
   const cookie = c.split(';')[0];
-  for (const p of ['/api/board', '/api/live?all=1', '/api/news', '/api/health']) {
+  for (const p of ['/api/board', '/api/live?all=1', '/api/news', '/api/health', '/api/profit']) {
     const r = await fetch(base + p, { headers: { cookie } });
     assert.equal(r.status, 200, p);
   }
