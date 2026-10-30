@@ -3,7 +3,7 @@ import {
   ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events, GatewayIntentBits, ModalBuilder, PermissionFlagsBits,
   SlashCommandBuilder, TextInputBuilder, TextInputStyle, type ButtonInteraction, type ChatInputCommandInteraction, type Interaction, type Message, type ModalSubmitInteraction,
 } from 'discord.js';
-import { confirmDraft, deleteDraft, draftCard, editDefaults, editDraft, getDraft, purgeDrafts, readPhoto, type Draft } from './photoslips.ts';
+import { confirmDraft, deleteDraft, draftCard, draftLegLines, editDefaults, editDraft, getDraft, purgeDrafts, readPhoto, type Draft } from './photoslips.ts';
 import { VisionError, type XaiOpts } from './slipvision.ts';
 import type { APIEmbed } from 'discord.js';
 import { getSlip } from './db.ts';
@@ -11,9 +11,10 @@ import type { Auth } from './auth.ts';
 import { getLegs, type Leg, type Slip } from './db.ts';
 import type { Engine, SettledEvent } from './engine.ts';
 import { ParseError, splitLegs } from './parse.ts';
+import { ratePasted, rateSlip, ratingDescription, type ParlayRating } from './rate.ts';
 import type { Resolver, ResolvedLeg } from './resolve.ts';
 import { createSlip, deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
-import { dayInTz, fmtOdds } from './util.ts';
+import { addDays, dayInTz, fmtOdds } from './util.ts';
 import { boardView, leaderboard, legText, liveView, slipView, type Ctx } from './views.ts';
 
 const BRAND = 0xc8102e; // Geass theme: Britannia crimson
@@ -31,6 +32,8 @@ export const commands = [
     .addBooleanOption((o) => o.setName('hidden').setDescription('Keep the legs hidden until you /reveal (or it settles)'))
     .addStringOption((o) => o.setName('title').setDescription('Optional name, e.g. "TNF sweat"').setMaxLength(60))
     .addStringOption((o) => o.setName('note').setDescription('Optional write-up / reasoning').setMaxLength(500)),
+  new SlashCommandBuilder().setName('rate').setDescription('Rate a parlay 1-10. Same syntax as /pick; nothing is saved.')
+    .addStringOption((o) => o.setName('legs').setDescription('Same leg syntax as /pick, separated with ; or newlines').setRequired(true)),
   new SlashCommandBuilder().setName('slips').setDescription('Open slips')
     .addUserOption((o) => o.setName('user').setDescription('Only this member')),
   new SlashCommandBuilder().setName('slip').setDescription('Show one slip').addStringOption((o) => o.setName('id').setDescription('Slip id').setRequired(true)),
@@ -204,12 +207,14 @@ export class Bot {
   private async onInteraction(i: Interaction) {
     if (i.isModalSubmit() && i.customId.startsWith('pick:')) return this.onPickModal(i);
     if (i.isButton() && i.customId.startsWith('photodel:')) return this.onPhotoDelete(i);
+    if (i.isButton() && i.customId.startsWith('rate:')) return this.onRateSlip(i);
     if (i.isButton() && i.customId.startsWith('pd:')) return this.onDraftButton(i);
     if (i.isModalSubmit() && i.customId.startsWith('pdm:')) return this.onDraftModal(i);
     if (!i.isChatInputCommand()) return;
     try {
       switch (i.commandName) {
         case 'pick': return await this.cmdPick(i);
+        case 'rate': return await this.cmdRate(i);
         case 'slips': return await this.cmdSlips(i);
         case 'slip': return await this.cmdSlip(i);
         case 'live': return await this.cmdLive(i);
@@ -252,6 +257,55 @@ export class Bot {
     } catch (e) { await i.editReply({ content: `⚠️ ${(e as Error).message}` }); }
   }
 
+  /** Upcoming games first; if nothing is on the board, look back two weeks so a settled screenshot still rates. */
+  private resolveForRating(text: string): Promise<ResolvedLeg> {
+    const tz = this.d.ctx.tz;
+    const leagues = this.d.ctx.leagues;
+    const today = dayInTz(new Date(), tz);
+    const ahead = Array.from({ length: 8 }, (_, i) => addDays(today, i));
+    return this.d.resolver.resolve(text, { tz, leagues, days: ahead }).catch((e) => {
+      if (!(e instanceof ParseError) || !/Couldn't find|No upcoming/.test(e.message)) throw e;
+      const back = Array.from({ length: 14 }, (_, i) => addDays(today, -1 - i));
+      return this.d.resolver.resolve(text, { tz, leagues, days: [...ahead, ...back], allowFinal: true });
+    });
+  }
+
+  private ratingEmbed(r: ParlayRating): EmbedBuilder {
+    const title = r.overall == null ? 'Parlay rating' : `Parlay rating · ${r.overall}/10`;
+    return new EmbedBuilder().setColor(BRAND).setTitle(title).setDescription(ratingDescription(r) || '—')
+      .setFooter({ text: 'ESPN game logs & current odds · not saved' });
+  }
+
+  private async replyRating(i: ButtonInteraction | ChatInputCommandInteraction, load: () => Promise<ParlayRating>) {
+    try {
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+      const rating = await load();
+      const payload = { embeds: [this.ratingEmbed(rating)] };
+      if (i.deferred || i.replied) await i.editReply(payload);
+      else await i.reply({ ...payload, ephemeral: true });
+    } catch (e) {
+      const msg = e instanceof ParseError || e instanceof SlipError ? e.message : 'Could not rate that.';
+      if (!(e instanceof ParseError || e instanceof SlipError)) console.error('[bot] rate', e);
+      if (i.deferred || i.replied) await i.editReply({ content: `⚠️ ${msg}`, embeds: [] });
+      else await i.reply({ ephemeral: true, content: `⚠️ ${msg}` });
+    }
+  }
+
+  private async cmdRate(i: ChatInputCommandInteraction) {
+    const text = i.options.getString('legs', true);
+    const lines = splitLegs(text);
+    if (!lines.length) throw new ParseError('Give at least one leg, same syntax as /pick.');
+    await this.replyRating(i, () => ratePasted(this.d.ctx.espn, (line) => this.resolveForRating(line), lines, this.d.vision));
+  }
+
+  private async onRateSlip(i: ButtonInteraction) {
+    const id = i.customId.slice('rate:'.length);
+    const s = slipWithLegs(this.d.ctx.db, id);
+    if (!s) return i.reply({ ephemeral: true, content: 'That slip is gone.' });
+    if (s.slip.hidden && s.slip.user_id !== i.user.id && !this.isAdmin(i)) return i.reply({ ephemeral: true, content: 'That slip is hidden.' });
+    await this.replyRating(i, () => rateSlip(this.d.ctx.espn, s.legs, this.d.vision));
+  }
+
   private async finishPick(i: ChatInputCommandInteraction | ModalSubmitInteraction, text: string, o: { stake: number; odds: number | null; hidden: boolean; title: string | null; note: string | null }) {
     const parts = splitLegs(text);
     const resolved: ResolvedLeg[] = [];
@@ -262,7 +316,10 @@ export class Bot {
     this.d.engine.poke();
     this.d.engine.emit('tick', { changed: [slip.id] });
     const legs = getLegs(this.d.ctx.db, slip.id);
-    await i.editReply({ embeds: [this.slipEmbed(slip, legs, o.hidden ? '🔒 Hidden slip saved (only you can see this)' : undefined, true)] });
+    const rateRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder().setCustomId(`rate:${slip.id}`).setStyle(ButtonStyle.Primary).setLabel('Rate'),
+    );
+    await i.editReply({ embeds: [this.slipEmbed(slip, legs, o.hidden ? '🔒 Hidden slip saved (only you can see this)' : undefined, true)], components: [rateRow] });
     if (o.hidden && i.channel && 'send' in i.channel) {
       await (i.channel as any).send({ content: `🔒 **${slip.user_name}** locked in a hidden ${legs.length}-leg slip (\`${slip.id}\`, ${units(slip.stake)}). Legs stay hidden until revealed.` }).catch(() => {});
     }
@@ -278,6 +335,7 @@ export class Bot {
     return [new ActionRowBuilder<ButtonBuilder>().addComponents(
       new ButtonBuilder().setCustomId(`pd:ok:${d.id}`).setStyle(ButtonStyle.Success).setLabel('Confirm').setDisabled(!canConfirm),
       new ButtonBuilder().setCustomId(`pd:edit:${d.id}`).setStyle(ButtonStyle.Secondary).setLabel('Edit'),
+      new ButtonBuilder().setCustomId(`pd:rate:${d.id}`).setStyle(ButtonStyle.Primary).setLabel('Rate'),
       new ButtonBuilder().setCustomId(`pd:no:${d.id}`).setStyle(ButtonStyle.Danger).setLabel('Cancel'),
     )];
   }
@@ -325,6 +383,7 @@ export class Bot {
     const [, action, id] = i.customId.split(':');
     const d = getDraft(this.d.ctx, id);
     if (!d) return i.update({ content: `${i.message.content.split('\n')[0]}\n_This card expired or was already handled._`, components: [] });
+    if (action === 'rate') return this.replyRating(i, () => ratePasted(this.d.ctx.espn, (text) => this.resolveForRating(text), draftLegLines(d), this.d.vision));
     if (!this.canAct(i, d.userId)) return i.reply({ ephemeral: true, content: `Only ${d.userName} or an admin can do that.` });
     if (action === 'no') { deleteDraft(this.d.ctx, id); return i.update({ content: '🗑️ Cancelled — nothing was logged.', components: [] }); }
     if (action === 'edit') {
@@ -352,7 +411,10 @@ export class Bot {
     return i.editReply({
       content: [`✅ Logged \`${out.slip.id}\`${out.unresolved ? ` · ${out.unresolved} leg(s) aren't on ESPN, so their results come from the slip` : ''}`, warn].filter(Boolean).join('\n'),
       embeds: [new EmbedBuilder(ticketEmbed(v, this.d.publicUrl, this.d.ctx.tz))],
-      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(new ButtonBuilder().setCustomId(`photodel:${out.slip.id}`).setStyle(ButtonStyle.Danger).setEmoji('❌').setLabel('Delete (misread)'))],
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(
+        new ButtonBuilder().setCustomId(`rate:${out.slip.id}`).setStyle(ButtonStyle.Primary).setLabel('Rate'),
+        new ButtonBuilder().setCustomId(`photodel:${out.slip.id}`).setStyle(ButtonStyle.Danger).setEmoji('❌').setLabel('Delete (misread)'),
+      )],
     });
   }
 

@@ -14,6 +14,9 @@ export const LEAGUES: Record<string, { path: string; label: string; sport: Sport
 export type Sport = 'basketball' | 'football' | 'hockey' | 'baseball';
 
 const BASE = 'https://site.api.espn.com/apis/site/v2/sports';
+/** Athlete game logs (common v3). Cached 30 minutes — a 10-leg slip must not refetch the same player. */
+const WEB = 'https://site.web.api.espn.com/apis/common/v3/sports';
+export const GAMELOG_TTL_MS = 30 * 60_000;
 /** Error text is shown on the dashboard; strip URLs so it can never reveal which event a hidden leg is on. */
 export const scrub = (m: string) => m.replace(/https?:\/\/\S+/g, '<url>').replace(/event=\w+/g, 'event=…').slice(0, 200);
 
@@ -113,6 +116,14 @@ export class Espn {
     return this.get<any>(`injuries:${league}`, `${BASE}/${L.path}/injuries`, () => 10 * 60_000);
   }
 
+  /** Recent game log for one athlete. In-flight calls collapse, and a hit lives for 30 minutes. */
+  async gamelog(league: string, athleteId: string): Promise<{ data: any; at: number; stale: boolean }> {
+    const L = LEAGUES[league];
+    if (!L) throw new Error(`unknown league ${league}`);
+    const url = `${WEB}/${L.path}/athletes/${encodeURIComponent(athleteId)}/gamelog`;
+    return this.get<any>(`gamelog:${league}`, url, () => GAMELOG_TTL_MS);
+  }
+
   async roster(league: string, teamId: string): Promise<{ id: string; name: string }[]> {
     const L = LEAGUES[league];
     const r = await this.get<any>(`roster:${league}`, `${BASE}/${L.path}/teams/${teamId}/roster`, () => 12 * 3600_000);
@@ -195,4 +206,192 @@ export function elapsedFraction(g: Pick<Game, 'league' | 'state' | 'period' | 'c
   const len = L.periodMin * 60;
   const elapsed = (g.period - 1) * len + Math.max(0, len - g.clock);
   return Math.min(1, Math.max(0, elapsed / (L.periods * len)));
+}
+
+/** One played (or DNP) row from an ESPN athlete game log, already mapped onto our stat keys. */
+export interface LogGame {
+  eventId: string;
+  date: string;
+  opponent: string | null;
+  preseason: boolean;
+  /** null = the column existed but the cell was blank / DNP. Absent key = column not in this log. */
+  stats: Record<string, number | null>;
+}
+export interface ParsedLog { games: LogGame[]; columns: string[]; }
+
+/** Current ESPN number for a game, from a scoreboard `odds[0]` or a summary `pickcenter[0]`. */
+export interface MarketQuote {
+  provider: string | null;
+  /** Signed spread from that team's perspective (home -3.5, away +3.5). */
+  spreadByAbbr: Record<string, number>;
+  total: number | null;
+  /** American moneyline for that team. */
+  mlByAbbr: Record<string, number>;
+}
+
+// ESPN game-log column name -> our canonical stat key. Sport-specific; combo keys are summed later, not read from a pre-baked column.
+const LOG_STAT: Record<Sport, Record<string, string>> = {
+  basketball: {
+    points: 'pts', totalRebounds: 'reb', rebounds: 'reb', assists: 'ast', steals: 'stl', blocks: 'blk', turnovers: 'to',
+    'threePointFieldGoalsMade-threePointFieldGoalsAttempted': '3pm',
+  },
+  football: {
+    passingYards: 'pass_yds', passingTouchdowns: 'pass_td', completions: 'pass_comp', passingAttempts: 'pass_att', interceptions: 'pass_int',
+    rushingYards: 'rush_yds', rushingAttempts: 'rush_att', rushingTouchdowns: 'rush_td',
+    receptions: 'rec', receivingYards: 'rec_yds', receivingTouchdowns: 'rec_td',
+    totalTackles: 'tackles', fieldGoalsMade: 'fg_made', totalKickingPoints: 'kick_pts',
+  },
+  hockey: {
+    goals: 'goals', assists: 'assists', shotsTotal: 'sog', shots: 'sog', shotsOnGoal: 'sog',
+    hits: 'hits', blockedShots: 'blocks', saves: 'saves', goalsAgainst: 'ga',
+  },
+  baseball: {
+    hits: 'hits', runs: 'runs', RBIs: 'rbi', homeRuns: 'hr', walks: 'bb', basesOnBalls: 'bb',
+  },
+};
+
+function logCell(espnName: string, raw: unknown): number | null {
+  if (raw == null) return null;
+  const s = String(raw).trim();
+  if (!s || s === '-' || s === '—' || /^dnp$/i.test(s)) return null;
+  if (espnName === 'innings' || espnName === 'inningsPitched' || espnName === 'fullInnings.partInnings') {
+    const [w, p] = s.replace(/,/g, '').split('.');
+    const outs = Number(w) * 3 + Number(p || 0);
+    return Number.isFinite(outs) ? outs : null;
+  }
+  // "8-13" made-attempted, "2-6" threes. The made count is the first number.
+  if (espnName.includes('-')) {
+    const m = s.match(/-?\d+(?:\.\d+)?/);
+    return m ? Number(m[0]) : null;
+  }
+  const n = Number(s.replace(/,/g, ''));
+  return Number.isFinite(n) ? n : null;
+}
+
+function logNameMap(sport: Sport, names: string[], groups: { name?: string }[]): Map<string, string> {
+  const pitching = sport === 'baseball' && names.includes('innings') && !names.includes('atBats');
+  const defensive = sport === 'football' && groups.some((g) => g?.name === 'defensive') && !names.includes('passingYards');
+  const table = LOG_STAT[sport];
+  const out = new Map<string, string>();
+  for (const n of names) {
+    if (pitching) {
+      if (n === 'innings' || n === 'inningsPitched') out.set(n, 'outs');
+      else if (n === 'hits') out.set(n, 'h_allowed');
+      else if (n === 'earnedRuns') out.set(n, 'er');
+      else if (n === 'strikeouts') out.set(n, 'pk');
+      continue;
+    }
+    // QB "sacks" are sacks taken, not defensive sacks. Only map them on a defensive log.
+    if (n === 'sacks' && sport === 'football') { if (defensive) out.set(n, 'sacks'); continue; }
+    const key = table[n];
+    if (key) out.set(n, key);
+  }
+  return out;
+}
+
+/** Turn an ESPN common/v3 gamelog payload into per-game canonical stats. Never fills a missing cell with 0. */
+export function parseGameLog(league: string, payload: any): ParsedLog {
+  const sport = LEAGUES[league]?.sport;
+  if (!sport) return { games: [], columns: [] };
+  const names: string[] = Array.isArray(payload?.names) ? payload.names.map(String) : [];
+  const groups: { name?: string }[] = Array.isArray(payload?.categories) ? payload.categories : [];
+  const map = logNameMap(sport, names, groups);
+  const columns = [...new Set(map.values())];
+  const events = payload?.events ?? {};
+  const games: LogGame[] = [];
+  const seen = new Set<string>();
+  for (const season of payload?.seasonTypes ?? []) {
+    const preseason = /preseason/i.test(String(season?.displayName ?? ''));
+    for (const cat of season?.categories ?? []) {
+      const catPre = preseason || /preseason/i.test(String(cat?.displayName ?? ''));
+      for (const row of cat?.events ?? []) {
+        const eventId = String(row?.eventId ?? '');
+        if (!eventId || seen.has(eventId)) continue;
+        seen.add(eventId);
+        const meta = events[eventId] ?? {};
+        const raw: unknown[] = Array.isArray(row?.stats) ? row.stats : [];
+        const stats: Record<string, number | null> = {};
+        names.forEach((name, i) => {
+          const key = map.get(name);
+          if (!key || i >= raw.length) return;
+          stats[key] = logCell(name, raw[i]);
+        });
+        games.push({
+          eventId,
+          date: String(meta.gameDate ?? meta.date ?? ''),
+          opponent: meta.opponent?.abbreviation ? String(meta.opponent.abbreviation) : null,
+          preseason: catPre,
+          stats,
+        });
+      }
+    }
+  }
+  return { games, columns };
+}
+
+function americanOdds(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v) && Math.abs(v) >= 100) return v;
+  if (typeof v === 'string') {
+    const n = Number(v.replace(/[^\d.+-]/g, ''));
+    if (Number.isFinite(n) && Math.abs(n) >= 100) return n;
+  }
+  return null;
+}
+function lineNum(v: unknown): number | null {
+  if (typeof v === 'number' && Number.isFinite(v)) return v;
+  if (typeof v !== 'string') return null;
+  const t = v.trim().toLowerCase();
+  if (t === 'pk' || t === 'pick' || t === 'even') return 0;
+  const m = t.match(/[+-]?\d+(?:\.\d+)?/);
+  return m ? Number(m[0]) : null;
+}
+function oneAbbr(token: string, home: string, away: string): string | null {
+  const t = token.toUpperCase();
+  const hits = [home, away].filter((a) => a === t || a.startsWith(t) || t.startsWith(a));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+/**
+ * Read the current spread, total and moneylines off an ESPN odds object.
+ * `spread` on these payloads is the home team's number. Close lines win over the open.
+ */
+export function parseMarketOdds(odds: any, homeAbbr: string, awayAbbr: string): MarketQuote | null {
+  if (!odds || typeof odds !== 'object') return null;
+  const home = homeAbbr.toUpperCase();
+  const away = awayAbbr.toUpperCase();
+  const spreadByAbbr: Record<string, number> = {};
+  const mlByAbbr: Record<string, number> = {};
+  const homeSpread = lineNum(odds.pointSpread?.home?.close?.line);
+  const awaySpread = lineNum(odds.pointSpread?.away?.close?.line);
+  if (homeSpread != null) spreadByAbbr[home] = homeSpread;
+  if (awaySpread != null) spreadByAbbr[away] = awaySpread;
+  if (homeSpread == null && awaySpread == null && typeof odds.spread === 'number' && Number.isFinite(odds.spread)) {
+    spreadByAbbr[home] = odds.spread;
+    spreadByAbbr[away] = -odds.spread;
+  }
+  if (!Object.keys(spreadByAbbr).length && typeof odds.details === 'string') {
+    const m = odds.details.trim().match(/^([A-Za-z]+)\s+([+-]?\d+(?:\.\d+)?|pk|pick)$/i);
+    if (m) {
+      const side = oneAbbr(m[1], home, away);
+      const line = lineNum(m[2]);
+      if (side && line != null) {
+        spreadByAbbr[side] = line;
+        spreadByAbbr[side === home ? away : home] = -line;
+      }
+    }
+  }
+  const homeMl = americanOdds(odds.moneyline?.home?.close?.odds) ?? americanOdds(odds.homeTeamOdds?.moneyLine);
+  const awayMl = americanOdds(odds.moneyline?.away?.close?.odds) ?? americanOdds(odds.awayTeamOdds?.moneyLine);
+  if (homeMl != null) mlByAbbr[home] = homeMl;
+  if (awayMl != null) mlByAbbr[away] = awayMl;
+  let total = lineNum(odds.overUnder);
+  if (total == null) total = lineNum(String(odds.total?.over?.close?.line ?? '').replace(/^[ou]/i, ''));
+  if (!Object.keys(spreadByAbbr).length && total == null && !Object.keys(mlByAbbr).length) return null;
+  return { provider: odds.provider?.name ?? null, spreadByAbbr, total, mlByAbbr };
+}
+
+/** Best odds object on a summary payload: pickcenter (what demo seeding uses), then summary.odds, then the header. */
+export function marketFromSummary(summary: any, homeAbbr: string, awayAbbr: string): MarketQuote | null {
+  const raw = summary?.pickcenter?.[0] ?? summary?.odds?.[0] ?? summary?.header?.competitions?.[0]?.odds?.[0];
+  return parseMarketOdds(raw, homeAbbr, awayAbbr);
 }

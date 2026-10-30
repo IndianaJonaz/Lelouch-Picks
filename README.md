@@ -15,7 +15,7 @@ a leaderboard ranked by profit, injury notes and the health of each data feed.
 
 | Area | Details |
 |---|---|
-| **Discord** | `/pick` (inline `legs:` or a multi-line form), `/slips`, `/slip`, `/live`, `/board`, `/leaderboard`, `/dashboard` (link and today's key, shown only to you), `/reveal`, `/delete`. Admin commands: `/poster`, `/settle`, `/rotatekey`. The bot posts in the channel when a slip cashes or loses. |
+| **Discord** | `/pick` (inline `legs:` or a multi-line form), `/rate` (score a parlay without saving it), `/slips`, `/slip`, `/live`, `/board`, `/leaderboard`, `/dashboard` (link and today's key, shown only to you), `/reveal`, `/delete`. Admin commands: `/poster`, `/settle`, `/rotatekey`. The bot posts in the channel when a slip cashes or loses. |
 | **Pick entry** | Plain text, matched to real games and ESPN athlete IDs: `Jokic o10.5 reb`, `Tatum 30+ pts (+150)`, `Giannis pra u45.5`, `Josh Allen o245.5 pass yds`, `Josh Jacobs anytime td +110`, `McDavid 1+ sog`, `GB -3.5`, `CAR/GB u47.5`, `GB ML -180`. You can add a league prefix (`NBA:`) or a team hint (`Name (TEAM)`). College props need the team hint. If a name is ambiguous, nothing is saved and you get a suggestion instead of a guess. |
 | **Grading** | Legs grade when the game ends. Overs cash, and unders bust, as soon as the line is passed. Whole-number lines can push. A DNP or a postponed game voids the leg. Parlays re-price when a leg pushes or voids. If the price can't be known, the slip goes to **review** (`/settle`) so the bot never invents a number. NFL players missing from the box score also go to review, because ESPN leaves out players with zero stats. |
 | **Hidden picks** | `/pick hidden:true`. The legs are removed server-side in one place (`src/views.ts`) and never reach any API, SSE message, injury lookup or error text. The channel only sees "🔒 hidden 3-leg slip". The legs are revealed by `/reveal`, or automatically when the slip settles so the record stays honest. |
@@ -23,7 +23,7 @@ a leaderboard ranked by profit, injury notes and the health of each data feed.
 | **The Board** | Group stats, tonight's poster (pinned by an admin or picked automatically), open slips, recent results, and a leaderboard by **profit in dollars** with record, ROI, amount risked and last-10 form (All, 30d, 7d, Today). |
 | **News & health** | ESPN injury notes for players on public open slips, plus Out/Questionable notes for teams on game-line legs. Status for the DB, the grading engine and Discord, and for each ESPN feed: last answer, latency, ok/total calls, last error. |
 | **Auth** | The access key is `PHQ-XXXX-XXXX`, derived with an HMAC from `APP_SECRET` and the date in `GROUP_TZ`, so it changes automatically every day. `/rotatekey` changes it immediately and can also sign everyone out. "Keep me signed in" gives a 30-day HttpOnly cookie; otherwise the session ends when the browser closes. Failed logins are limited to 10 per 10 minutes per IP. |
-| **Speed** | The ESPN client caches responses in memory (live games 12–15 s, scoreboards 60 s, injuries 10 min, rosters 12 h) and merges duplicate in-flight requests. Static assets are brotli/gzip-compressed ahead of time and served with ETags. Updates reach the browser over SSE (with a polling fallback), and the engine polls every 15 s while a game is live or about to start and every 60 s otherwise. |
+| **Speed** | The ESPN client caches responses in memory (live games 12–15 s, scoreboards 60 s, injuries 10 min, rosters 12 h, athlete game logs 30 min) and merges duplicate in-flight requests. Static assets are brotli/gzip-compressed ahead of time and served with ETags. Updates reach the browser over SSE (with a polling fallback), and the engine polls every 15 s while a game is live or about to start and every 60 s otherwise. |
 | **PWA** | Manifest, maskable icons, Apple touch icon, and a service worker that caches only the app shell. Data is never cached, so stale numbers are never shown as live. |
 
 ## Run locally
@@ -33,7 +33,7 @@ npm install
 cp .env.example .env          # set APP_SECRET; DEMO_MODE=1 to preview
 npm run demo                  # or: npm start
 # open http://localhost:8080 — the key is in data/demo-access-key.txt (demo) or: npm run key
-npm test                      # 46 tests: parser, box scores, grading, settlement, hidden-pick leaks, auth, HTTP
+npm test                      # 85 tests: parser, box scores, grading, settlement, parlay rating, hidden-pick leaks, auth, HTTP
 npm run screenshots           # BASE=http://localhost:8080; needs Chrome (CHROME_PATH)
 ```
 
@@ -118,10 +118,11 @@ src/
   main.ts       wiring: DB, ESPN client, engine, web server, bot, demo
   config.ts     env + .env loader
   db.ts         SQLite schema (slips, legs, sessions, kv)
-  espn.ts       ESPN client: cache, de-dupe, feed health, game parsing, elapsed-time math
+  espn.ts       ESPN client: cache, de-dupe, feed health, game parsing, game logs, elapsed-time math
   stats.ts      box-score normalisation per sport + stat aliases
   parse.ts      free-text leg parser
   resolve.ts    match legs to real games / ESPN athlete IDs
+  rate.ts       parlay rating (pure scoring + ESPN fetch)
   grading.ts    pure grading, pace and settlement logic
   engine.ts     polling loop: grade, settle, auto-reveal, emit events
   store.ts      slip create/reveal/delete/poster/manual settle
@@ -143,7 +144,7 @@ mode, tight crops and several slips in one image are fine. iPhone HEIC photos ge
 
 1. **Read.** xAI vision returns strict JSON with per-leg confidence. If the first pass misses legs (fewer than the
    header's pick count, no stake, no line), the bot does **one** focused re-read and keeps the better result.
-2. **Confirm card.** Nothing is logged automatically. Each slip gets a card with **Confirm / Edit / Cancel**. Blanks
+2. **Confirm card.** Nothing is logged automatically. Each slip gets a card with **Confirm / Edit / Rate / Cancel**. **Rate** scores the extracted legs and does not log the slip. Blanks
    (⬜) and unsure legs (⚠️) are marked. A line that can't be read is left blank, never guessed, and Confirm stays off
    until it's filled in through **Edit**. A failed read still gets a blank card. Only the poster or an admin can
    confirm, edit or cancel. Cards expire after 48 h.
@@ -154,7 +155,7 @@ mode, tight crops and several slips in one image are fine. iPhone HEIC photos ge
    contradiction. Legs ESPN doesn't cover (esports, Kalshi markets) keep the screenshot's result. Open slips grade
    live. Legs stay in printed order, and odds are kept as printed (Kalshi as `YES 40¢ × 25`).
 4. **Ticket.** The card is replaced by a ticket embed showing the book and play type, `risk → pays`, sports, `n/N HIT`,
-   status, a row per leg and "logged by", plus **❌ Delete (misread)**. The dashboard has the same ticket at
+   status, a row per leg and "logged by", plus **Rate** and **❌ Delete (misread)**. The dashboard has the same ticket at
    `/slip/<id>`.
 
 The image is never stored, only its hash (for dedupe) and the Discord message link. That link is not on the public
@@ -163,6 +164,19 @@ hash per member). Screenshots in `DISCORD_STAFF_CHANNEL_IDS` become **test** sli
 
 Admin import (same path): `POST /api/admin/slips` with `{user, userId?, text, stake, odds?, date?, result?: {status, profit}}`;
 `GET /api/admin/slips/:id` (includes the screenshot link) and `DELETE /api/admin/slips/:id`.
+
+## Parlay rating
+
+`/rate legs:` uses the same leg text as `/pick` (`splitLegs` / `parseLeg`, then the resolver) and replies only to you. It does not save a slip. The same score is on the **Rate** button of a `/pick` result and of a screenshot confirm card (and on the ticket after you confirm).
+
+Each leg is `7/10 · Jokic o10.5 reb — hit 8/10, avg 12.4, margin +1.9 vs DAL`, and the slip is `Parlay: 5/10 · weakest: Tatum u27.5 pts`. A leg with no stat behind it is `—` and is left out of the parlay number. The formulas live in `src/rate.ts`:
+
+* **Props.** Last-10 hit rate × 10, then nudged by at most ±1.5 for how far the season average sits from the line (a cushion of half the line is the cap). Combo stats add their components. Anytime TD, home run and goal legs count games with at least one. Blank game-log cells are skipped, not counted as zeros. No column, no athlete id, or no played games → no score.
+* **Spread and total.** 5 when your number matches ESPN's current number. Each half-point you have on the market is worth one point of score (getting +4.5 when the market is +3.5 scores 7). No ESPN line → 5, "no market line found".
+* **Moneyline.** 10 × the market's implied probability (50% → 5, about 64% → 6). Your own price moves that by roughly one point per 10 percentage points of difference. No market moneyline → 5, "no market line found".
+* **Parlay.** Each leg score is read as a probability out of 10 and the scores are multiplied, then scaled back to 1–10. One leg is unchanged. A weak leg dominates. Unscored legs are excluded, and the lowest scored leg is flagged.
+
+If `XAI_API_KEY` is set, a 2–3 sentence note is added from those numbers only. No key, or a failed call, just omits the note. The key is never logged. Line-movement history is not part of this. The dashboard slip page does not rate legs.
 
 ## Accuracy notes and limits
 
