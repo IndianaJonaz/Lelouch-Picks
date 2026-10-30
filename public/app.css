@@ -38,6 +38,9 @@ button{font:inherit;color:inherit;cursor:pointer;border:0;background:none}
 .dot.live{background:var(--live);animation:blink 1.2s infinite}
 @keyframes blink{50%{opacity:.35}}
 .icon-btn{padding:8px;border-radius:10px;color:var(--tx2)}.icon-btn:hover{background:rgba(200,16,46,.12);color:var(--gold2)}
+/* The Board: Geass castle backdrop under a dark overlay; body gradient/colour stays as fallback. */
+body[data-view="board"]{background-color:var(--bg);background-image:linear-gradient(rgba(10,5,6,.55),rgba(10,5,6,.8)),url(/board-bg.jpg?v=geass2);background-image:linear-gradient(rgba(10,5,6,.55),rgba(10,5,6,.8)),image-set(url(/board-bg.webp?v=geass2) type("image/webp"),url(/board-bg.jpg?v=geass2) type("image/jpeg"));background-size:cover;background-position:center bottom;background-repeat:no-repeat;background-attachment:fixed}
+@media (max-width:760px),(hover:none){body[data-view="board"]{background-attachment:scroll}}
 main{max-width:1180px;margin:0 auto;padding:22px 20px calc(96px + env(safe-area-inset-bottom))}
 .demo-banner{max-width:1180px;margin:14px auto 0;padding:0 20px}
 .demo-banner div{display:flex;gap:10px;align-items:center;font-size:13px;padding:10px 14px;border-radius:12px;background:rgba(234,179,8,.08);border:1px solid rgba(234,179,8,.28);color:#fde68a}
