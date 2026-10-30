@@ -75,7 +75,7 @@ export function ticketEmbed(v: ReturnType<typeof slipView>, publicUrl: string, t
   const money = (n: number | null | undefined) => (n == null ? '—' : `$${n.toFixed(2)}`);
   const net = t.net == null ? '' : ` · net ${t.net > 0 ? '+' : t.net < 0 ? '−' : ''}${money(Math.abs(t.net))}`;
   const badge = [t.book ? `**${t.book.toUpperCase()}**` : null, t.playBadge ? `\`${t.playBadge}\`` : null, t.isTest ? '`TEST`' : null].filter(Boolean).join('  ');
-  const color = v.status === 'won' ? 0x22c55e : v.status === 'lost' ? 0xef4444 : v.status === 'review' ? 0xf59e0b : v.status === 'open' ? BRAND : 0x94a3b8;
+  const color = v.status === 'won' ? WON : v.status === 'lost' ? LOST : v.status === 'review' ? 0xf59e0b : v.status === 'open' ? BRAND : 0x94a3b8;
   const rows = v.legs.map((l) => `${ICON[l.status] ?? '•'} ${l.ticketText}${l.actual != null ? ` — **${l.actual}**` : ''} · _${l.statusWord}_`);
   const logged = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(v.createdAt.endsWith('Z') ? v.createdAt : v.createdAt + 'Z'));
   return {
