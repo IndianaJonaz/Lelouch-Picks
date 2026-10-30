@@ -20,6 +20,7 @@ const svg = {
   board: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9" rx="2"/><rect x="14" y="3" width="7" height="5" rx="2"/><rect x="14" y="12" width="7" height="9" rx="2"/><rect x="3" y="16" width="7" height="5" rx="2"/></svg>',
   news: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>',
   lock: '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>',
+  img: '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',
   out: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg>',
 };
 
@@ -100,9 +101,37 @@ function render() {
   document.getElementById('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); S.es?.close(); S.es = null; S.me.authed = false; S.data = {}; render(); };
   $app.querySelectorAll('[data-period]').forEach((b) => (b.onclick = () => { S.period = b.dataset.period; load('board'); }));
   $app.querySelectorAll('[data-more]').forEach((b) => (b.onclick = () => { S.allRecent = true; render(); }));
+  $app.querySelectorAll('[data-img]').forEach((r) => {
+    r.onclick = () => openSlipImage(r.dataset.img, r);
+    r.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSlipImage(r.dataset.img, r); } };
+  });
   $app.querySelectorAll('[data-newstab]').forEach((b) => (b.onclick = () => { S.newsTab = b.dataset.newstab; render(); }));
   $app.querySelectorAll('[data-all]').forEach((b) => (b.onclick = () => { S.showAll = b.dataset.all === '1'; render(); load('live'); }));
   renderFresh();
+}
+
+// ---------- slip screenshot lightbox (image fetched live from Discord; never stored) ----------
+let lbClose = null;
+function openSlipImage(id, opener) {
+  lbClose?.();
+  const el = document.createElement('div');
+  el.className = 'lbx';
+  el.setAttribute('role', 'dialog'); el.setAttribute('aria-modal', 'true'); el.setAttribute('aria-label', `Slip ${id} screenshot`);
+  el.innerHTML = `<div class="lbx-box"><div class="lbx-head"><span>Slip <b>${esc(id)}</b></span><button class="lbx-x" aria-label="Close">✕</button></div>
+    <div class="lbx-body"><div class="lbx-state"><span class="logo-mark big"></span><span>Summoning the slip from Discord…</span></div></div></div>`;
+  const body = el.querySelector('.lbx-body');
+  const img = new Image();
+  img.alt = `Slip ${id} screenshot`;
+  img.onload = () => { body.replaceChildren(img); };
+  img.onerror = () => { body.innerHTML = '<div class="lbx-state err"><b>Image no longer available on Discord</b><span class="dim">The original message or attachment was deleted.</span></div>'; };
+  img.src = `/api/slips/${encodeURIComponent(id)}/image`;
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const close = () => { el.remove(); document.removeEventListener('keydown', onKey); document.body.classList.remove('lbx-open'); lbClose = null; img.onload = img.onerror = null; opener?.focus?.(); };
+  el.addEventListener('click', (e) => { if (e.target === el || e.target.closest('.lbx-x')) close(); });
+  document.addEventListener('keydown', onKey);
+  document.body.appendChild(el); document.body.classList.add('lbx-open');
+  el.querySelector('.lbx-x').focus();
+  lbClose = close;
 }
 
 function renderFresh() {
@@ -258,7 +287,7 @@ function viewBoard() {
       <td class="num">${r.w}-${r.l}${r.p ? '-' + r.p : ''}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td><td class="num hm muted">${u(r.staked)}</td>
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty"><b>No settled slips in this window</b>Rankings appear once slips grade.</div>`}</div></section>`;
-  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res">${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div><span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
+  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res${s.hasImage ? ' has-img' : ''}"${s.hasImage ? ` data-img="${esc(s.id)}" role="button" tabindex="0" aria-label="View slip screenshot ${esc(s.id)}"` : ''}>${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div>${s.hasImage ? `<span class="img-ic" title="View slip screenshot">${svg.img}</span>` : ''}<span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
   return html;
 }
 

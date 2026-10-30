@@ -101,6 +101,36 @@ export interface BotDeps {
   staffChannelIds?: string[];
 }
 
+/** A slip screenshot still on Discord. The url is a short-lived signed CDN link: fetch it, never log or store it. */
+export interface SlipImage { url: string; contentType: string }
+
+/** Just enough of a discord.js Client to re-fetch a message. Real clients satisfy this; tests pass a mock. */
+export interface MessageFetchClient {
+  isReady(): boolean;
+  channels: { fetch(id: string): Promise<unknown> };
+}
+
+const DISCORD_CDN = /^https:\/\/(cdn\.discordapp\.com|media\.discordapp\.net)\//;
+
+/**
+ * Re-fetch a saved Discord message and return its first image attachment, or null when the bot isn't ready,
+ * the channel/message is gone or unreadable, or it no longer has an image. Never throws.
+ */
+export async function fetchSlipImage(client: MessageFetchClient | null | undefined, channelId: string, messageId: string): Promise<SlipImage | null> {
+  if (!client?.isReady() || !/^\d{5,25}$/.test(channelId) || !/^\d{5,25}$/.test(messageId)) return null;
+  try {
+    const ch = await client.channels.fetch(channelId) as any;
+    if (!ch?.messages?.fetch) return null;
+    const msg = await ch.messages.fetch(messageId);
+    const atts: any[] = msg?.attachments ? [...msg.attachments.values()] : [];
+    for (const a of atts) {
+      const type = String(a?.contentType ?? '').split(';')[0].trim().toLowerCase();
+      if (type.startsWith('image/') && typeof a.url === 'string' && DISCORD_CDN.test(a.url)) return { url: a.url, contentType: type };
+    }
+    return null;
+  } catch { return null; } // Unknown Message / Missing Access / network: treat as gone
+}
+
 const MAX_IMAGES_PER_MESSAGE = 4;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
@@ -196,6 +226,9 @@ export class Bot {
   }
 
   async stop() { await this.client?.destroy(); }
+
+  /** First image on a saved slip message, fetched fresh from Discord (nothing is stored). */
+  slipImage(channelId: string, messageId: string): Promise<SlipImage | null> { return fetchSlipImage(this.client, channelId, messageId); }
 
   private isAdmin(i: ChatInputCommandInteraction | ButtonInteraction | ModalSubmitInteraction) {
     if (i.memberPermissions?.has(PermissionFlagsBits.ManageGuild)) return true;

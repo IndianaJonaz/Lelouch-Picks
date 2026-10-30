@@ -65,12 +65,25 @@ function publicLeg(l: Leg, ctx: Ctx) {
   };
 }
 
+/**
+ * Where a slip's screenshot lives on Discord, if it came from one. We never store the image — only this pointer.
+ * Photo imports save channel_id + message_id; older rows may only have the message link in source_url.
+ * /pick slips have a channel but no message id, so they return null.
+ */
+export function slipImageRef(slip: Pick<Slip, 'channel_id' | 'message_id' | 'source_url'>): { channelId: string; messageId: string } | null {
+  if (slip.channel_id && slip.message_id) return { channelId: slip.channel_id, messageId: slip.message_id };
+  const m = slip.source_url?.match(/^https:\/\/(?:\w+\.)?discord(?:app)?\.com\/channels\/(?:\d+|@me)\/(\d+)\/(\d+)\/?$/);
+  return m ? { channelId: m[1], messageId: m[2] } : null;
+}
+
 export function slipView(slip: Slip, legs: Leg[], ctx: Ctx) {
   const pub = isPublic(slip);
   const base = {
     id: slip.id, user: slip.user_name, userId: slip.user_id, title: slip.title, stake: slip.stake, status: slip.status, profit: slip.profit,
     createdAt: slip.created_at, settledAt: slip.settled_at, demo: !!slip.is_demo, test: !!slip.is_test, hidden: !pub, wasHidden: !!slip.hidden, book: slip.book,
     legCount: legs.length,
+    /** Screenshot slip whose image can be fetched from Discord on demand (never for hidden slips or /pick entries). */
+    hasImage: pub && !!slipImageRef(slip),
     progress: { won: legs.filter((l) => l.status === 'won').length, lost: legs.filter((l) => l.status === 'lost').length, pending: legs.filter((l) => l.status === 'pending').length },
   };
   if (!pub) return { ...base, progress: { won: 0, lost: 0, pending: legs.length }, odds: null, oddsText: '', toWin: null, note: null, legs: [] as ReturnType<typeof publicLeg>[], ticket: null as ReturnType<typeof ticket> | null, firstStart: null };

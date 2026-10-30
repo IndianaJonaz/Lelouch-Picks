@@ -275,3 +275,22 @@ a.nws-t:hover{color:var(--gold2)}
 ::selection{background:rgba(200,16,46,.55);color:#fff}
 a:focus-visible,button:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}
 .toast{border-color:rgba(212,175,55,.35)}
+
+/* ---------- recent results: screenshot rows + Geass lightbox ---------- */
+.res.has-img{cursor:pointer;transition:background .15s,box-shadow .15s}
+.res.has-img:hover,.res.has-img:focus-visible{background:rgba(212,175,55,.07);box-shadow:inset 3px 0 0 var(--gold);outline:none}
+.res .img-ic{display:grid;place-items:center;flex:none;color:var(--gold);opacity:.75}
+.res.has-img:hover .img-ic{opacity:1;color:var(--gold2)}
+body.lbx-open{overflow:hidden}
+.lbx{position:fixed;inset:0;z-index:100;display:grid;place-items:center;padding:max(16px,env(safe-area-inset-top)) 16px max(16px,env(safe-area-inset-bottom));background:radial-gradient(800px 500px at 50% 40%,rgba(139,0,0,.38),rgba(0,0,0,.9) 70%);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);animation:lbx-in .18s ease-out}
+@keyframes lbx-in{from{opacity:0}}
+.lbx-box{position:relative;width:min(560px,100%);max-height:100%;display:flex;flex-direction:column;background:linear-gradient(160deg,#2a0710,#0b0b0d 60%);border:1px solid var(--gold);border-radius:18px;box-shadow:0 0 0 1px rgba(200,16,46,.4),0 24px 60px -10px rgba(0,0,0,.8),0 0 40px -10px rgba(200,16,46,.7);overflow:hidden}
+.lbx-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px 10px 16px;border-bottom:1px solid var(--line2);font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--tx2)}
+.lbx-head b{color:var(--gold2)}
+.lbx-x{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;font-size:16px;color:var(--gold);border:1px solid var(--line2)}
+.lbx-x:hover{background:rgba(200,16,46,.2);color:var(--gold2)}
+.lbx-body{overflow:auto;-webkit-overflow-scrolling:touch;display:grid;place-items:center;min-height:200px}
+.lbx-body img{display:block;max-width:100%;max-height:calc(100dvh - 120px);height:auto;margin:0 auto}
+.lbx-state{display:grid;justify-items:center;gap:12px;padding:40px 24px;text-align:center;color:var(--tx2);font-size:14px}
+.lbx-state.err b{color:var(--loss);font-size:15px}
+@media (max-width:560px){.lbx{padding:10px}.lbx-box{border-radius:14px}}
