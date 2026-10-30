@@ -168,7 +168,7 @@ test('confirm: legs graded from ESPN first, then the slip result; poster\'s row;
   assert.equal(e.title, `$55.00 → $330.00   ·   #${s.id}`);
   assert.match(e.description!, /\*\*PRIZEPICKS\*\*  `POWER PLAY`/);
   assert.match(e.description!, /NBA \/ LOL · 3 legs · \*\*3\/3 HIT\*\*/);
-  assert.match(e.description!, /\*\*SETTLED · CASHED\*\* · net \+\$275\.00/);
+  assert.match(e.description!, /\*\*SETTLED · CASHED\*\* · net \$275\.00/);
   assert.match(e.description!, /Giannis Antetokounmpo under 25\.5 Points — \*\*24\*\*/);
   assert.match(e.footer!.text, /^logged by Lelouch · .+ CT$/);
   assert.equal(e.url, `https://x.test/slip/${s.id}`);
