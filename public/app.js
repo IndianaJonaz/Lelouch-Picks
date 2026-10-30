@@ -364,7 +364,7 @@ function viewBoard() {
   const periods = [['all', 'All time'], ['30d', '30 days'], ['7d', '7 days'], ['today', 'Today']];
   const lb = d.leaderboard;
   const maxAbs = Math.max(1, ...lb.map((x) => Math.abs(x.profit)));
-  html += `<section class="sec"><div class="sec-head"><h2>Leaderboard · Holiday Season ❄️💸</h2><span class="count">ranked by profit, not volume</span><span class="spacer" style="flex:1"></span><div class="seg">${periods.map(([k, l]) => `<button data-period="${k}" class="${d.period === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
+  html += `<section class="sec"><p class="hol-banner"> ❄️ . 💸 holiday season 💸 . ❄️ </p><div class="sec-head"><h2>Leaderboard</h2><span class="count">ranked by profit, not volume</span><span class="spacer" style="flex:1"></span><div class="seg">${periods.map(([k, l]) => `<button data-period="${k}" class="${d.period === k ? 'on' : ''}">${l}</button>`).join('')}</div></div>
     <div class="card scroll-x">${lb.length ? `<table class="lb"><thead><tr><th>#</th><th>Member</th><th>Profit</th><th>Record</th><th>ROI</th><th class="hm">Risked</th><th class="hm">Form</th></tr></thead><tbody>
     ${lb.map((r) => `<tr data-pguser="${esc(r.userId)}" class="${S.pgFocus === r.userId ? 'pg-on' : ''}" title="Show on profit graph"><td class="rk">${r.rank}</td><td><div class="u">${av(r.user)}${esc(r.user)}${r.demo ? ' <span class="chip demo">DEMO</span>' : ''}</div></td>
       <td class="num"><span class="pbar"><i style="width:${(Math.abs(r.profit) / maxAbs * 100).toFixed(0)}%;background:${r.profit >= 0 ? 'var(--win)' : 'var(--loss)'}"></i></span><b class="${cls(r.profit)}">${u(r.profit)}</b></td>
