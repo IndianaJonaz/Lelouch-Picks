@@ -1,4 +1,4 @@
-# PICKS HQ
+# Lelouch HQ
 
 A Discord bot plus a live web dashboard for a group that posts sports picks. People post slips in Discord, the
 server grades every leg from real ESPN box scores, and the dashboard shows live games with pace bars, the board,
@@ -71,7 +71,8 @@ curl -X POST $URL/api/admin/import -H "authorization: Bearer $ADMIN_TOKEN" -H 'c
 | `DISCORD_GUILD_ID` | recommended | | Registers commands to your server instantly. Without it they're global and can take up to an hour. |
 | `DISCORD_ADMIN_ROLE_IDS` | | | Comma-separated role IDs. Members with Manage Server always count as admins. |
 | `ADMIN_TOKEN` | | | Turns on the admin HTTP API. |
-| `GROUP_NAME` | | `PICKS HQ` | Shown in bot embeds. |
+| `GROUP_NAME` | | `Lelouch HQ` | Shown in bot embeds. |
+| `BOT_NICKNAME` | | `Lelouch HQ` | Server nickname set on ready in each guild. Does not change the global bot username. If Change Nickname is missing, the bot logs a warning and continues. |
 | `DEMO_MODE` | | `0` | `1` seeds the labelled demo data and writes the key file. |
 | `POLL_LIVE_MS` / `POLL_IDLE_MS` | | `15000` / `60000` | Grading engine poll intervals. |
 | `XAI_API_KEY` | for screenshots | | Turns on reading slip screenshots posted in Discord (xAI vision). Unset = feature off. |

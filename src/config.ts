@@ -29,6 +29,8 @@ export const config = {
   dataDir,
   leagues: (env.LEAGUES || 'nba,nfl,nhl,mlb,ncaaf,ncaab,wnba').split(',').map((s) => s.trim()).filter(Boolean),
   discordToken: env.DISCORD_BOT_TOKEN || '',
+  /** Guild nickname applied on ready. Never used as the global username. */
+  botNickname: (env.BOT_NICKNAME || 'Lelouch HQ').trim().slice(0, 32) || 'Lelouch HQ',
   discordAppId: env.DISCORD_APP_ID || '',
   discordGuildId: env.DISCORD_GUILD_ID || '',
   discordAdminRoles: (env.DISCORD_ADMIN_ROLE_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),

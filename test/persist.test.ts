@@ -83,7 +83,7 @@ test('admin export/import: bearer only, raw SQLite bytes, import replaces data i
   const { s, store } = fakeStore();
   const snapshots = new Snapshotter(db, store);
   const auth = new Auth(db, 'test-secret', 'America/Chicago');
-  const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'PICKS HQ',
+  const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'Lelouch HQ',
     headlines: new Headlines({ feeds: [] }), snapshots });
   await new Promise<void>((r) => server.listen(0, r));
   const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;

@@ -1,4 +1,4 @@
-// PICKS HQ client — vanilla JS, no framework, ~1 request per view + SSE push.
+// Lelouch HQ client — vanilla JS, no framework, ~1 request per view + SSE push.
 'use strict';
 const $app = document.getElementById('app');
 const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false, newsTab: 'sports' };
@@ -87,7 +87,7 @@ function render() {
   const body = S.err[v] && !S.data[v === 'news' ? 'news' : v] ? errBox(S.err[v]) : v === 'live' ? viewLive() : v === 'board' ? viewBoard() : v === 'slip' ? viewSlip() : viewNews();
   $app.innerHTML = `
   <header class="top"><div class="top-in">
-    <a data-nav href="/board" class="brand"><span class="logo-mark"></span><span>PICKS <b>HQ</b></span></a>
+    <a data-nav href="/board" class="brand"><span class="logo-mark"></span><span>Lelouch <b>HQ</b></span></a>
     <nav class="nav">${nav('live', 'Live', '')}${nav('board', 'The Board', '')}${nav('news', 'News & health', '')}</nav>
     <div class="spacer"></div>
     <div class="fresh" id="fresh"></div>
@@ -121,7 +121,7 @@ const skel = (n = 4) => `<div class="grid g2">${'<div class="skel"></div>'.repea
 function renderLogin() {
   $app.innerHTML = `
   <div class="login"><form class="card login-card" id="lf" autocomplete="off">
-    <div class="brand"><span class="logo-mark"></span><span>PICKS <b>HQ</b></span></div>
+    <div class="brand"><span class="logo-mark"></span><span>Lelouch <b>HQ</b></span></div>
     <h1>Welcome back</h1>
     <p>Enter today’s access key. Run <b>/dashboard</b> in Discord to get it — keys rotate every day.</p>
     <label class="field" for="key">Access key</label>
@@ -130,7 +130,7 @@ function renderLogin() {
       <label class="opt"><input type="radio" name="remember" value="1"><span>Keep me signed in<small>Stay signed in on this device for 30 days</small></span></label>
       <label class="opt"><input type="radio" name="remember" value="0" checked><span>This browser session only<small>Signed out when you close the browser</small></span></label>
     </div>
-    <button class="btn" id="lb" type="submit">Enter PICKS HQ</button>
+    <button class="btn" id="lb" type="submit">Enter Lelouch HQ</button>
     <div class="form-err" id="le" role="alert"></div>
     <div class="hint">Private to your Discord group. Hidden picks stay hidden until they’re revealed.<br>On iPhone: Share → Add to Home Screen.</div>
   </form></div>`;

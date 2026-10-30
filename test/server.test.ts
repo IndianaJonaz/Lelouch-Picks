@@ -11,7 +11,7 @@ import { Headlines } from '../src/news.ts';
 
 const { ctx, espn, db } = makeCtx({ 'nba/injuries': { injuries: [] }, 'nba/summary?event=401909881': fx('nba_summary_final'), 'nba/scoreboard': fx('nba_scoreboard_final'), 'nfl/scoreboard': { events: [] }, 'nhl/scoreboard': new Error('HTTP 500') });
 const auth = new Auth(db, 'test-secret', 'America/Chicago');
-const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'PICKS HQ',
+const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'Lelouch HQ',
   headlines: new Headlines({ feeds: [{ id: 'espn', name: 'ESPN', section: 'sports', url: 'https://fake/espn' }, { id: 'g', name: 'Google News · Health', section: 'health', url: 'https://fake/g' }],
     fetcher: async (u) => readFileSync(new URL(`./fixtures/${u.endsWith('espn') ? 'rss_espn' : 'rss_gnews'}.xml`, import.meta.url), 'utf8') }) });
 await new Promise<void>((r) => server.listen(0, r));
@@ -36,9 +36,14 @@ test('static shell, manifest and security headers', async () => {
   const r = await fetch(base + '/', { headers: { 'accept-encoding': 'br' } });
   assert.equal(r.status, 200);
   assert.match(r.headers.get('content-security-policy')!, /script-src 'self'/);
-  assert.match(await r.text(), /manifest\.webmanifest/);
+  const html = await r.text();
+  assert.match(html, /manifest\.webmanifest/);
+  assert.match(html, /<title>Lelouch HQ<\/title>/);
+  assert.match(html, /apple-mobile-web-app-title" content="Lelouch HQ"/);
   const m = await (await fetch(base + '/manifest.webmanifest')).json();
   assert.equal(m.display, 'standalone');
+  assert.equal(m.name, 'Lelouch HQ');
+  assert.equal(m.short_name, 'Lelouch');
   assert.equal((await fetch(base + '/board')).status, 200);
   assert.equal((await fetch(base + '/healthz')).status, 200);
 });

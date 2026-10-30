@@ -1,4 +1,4 @@
-# PICKS HQ — single small image: Node 24 runs the TypeScript sources directly (type stripping), no build step.
+# Lelouch HQ — single small image: Node 24 runs the TypeScript sources directly (type stripping), no build step.
 FROM node:24-slim
 ENV NODE_ENV=production \
     PORT=8080 \

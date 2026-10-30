@@ -2,7 +2,7 @@
   "name": "picks-hq",
   "version": "1.0.0",
   "private": true,
-  "description": "PICKS HQ — group sports-picks Discord bot + live web dashboard",
+  "description": "Lelouch HQ — group sports-picks Discord bot + live web dashboard",
   "type": "module",
   "engines": { "node": ">=22.18" },
   "scripts": {

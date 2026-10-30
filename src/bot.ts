@@ -50,8 +50,46 @@ export const commands = [
     .addBooleanOption((o) => o.setName('signout').setDescription('Also sign out every dashboard session')),
 ].map((c) => c.toJSON());
 
+/** Enough of a guild for the ready-time nickname step. Real discord.js guilds satisfy this. */
+export interface GuildNickTarget {
+  id: string;
+  name: string;
+  members: {
+    me: NickMember | null;
+    fetchMe: () => Promise<NickMember>;
+  };
+}
+interface NickMember {
+  nickname: string | null;
+  permissions: { has: (permission: bigint) => boolean };
+  setNickname: (nick: string) => Promise<unknown>;
+}
+
+/**
+ * Set the bot's nickname in each guild. Never touches the global username.
+ * Missing Change Nickname, or any Discord error, is logged and skipped.
+ */
+export async function applyGuildNicknames(guilds: Iterable<GuildNickTarget>, nickname?: string | null): Promise<void> {
+  const nick = (nickname ?? '').trim().slice(0, 32) || 'Lelouch HQ';
+  for (const guild of guilds) {
+    try {
+      const me = guild.members.me ?? await guild.members.fetchMe();
+      if (!me?.permissions.has(PermissionFlagsBits.ChangeNickname)) {
+        console.warn(`[bot] nickname skipped in ${guild.name}: missing Change Nickname`);
+        continue;
+      }
+      if (me.nickname === nick) continue;
+      await me.setNickname(nick);
+    } catch (e) {
+      console.warn(`[bot] nickname skipped in ${guild.id}: ${(e as Error).message}`);
+    }
+  }
+}
+
 export interface BotDeps {
   ctx: Ctx; auth: Auth; resolver: Resolver; engine: Engine; token: string; guildId: string; adminRoles: string[]; publicUrl: string; groupName: string;
+  /** Server nickname applied on ready. Defaults to "Lelouch HQ". Not the global username. */
+  nickname?: string;
   /** Screenshot reading (xAI). null = feature off. */
   vision?: XaiOpts | null;
   /** Only read screenshots in these channels (or threads under them). Empty = any channel the bot can see. */
@@ -117,6 +155,8 @@ export class Bot {
         else await c.application.commands.set(commands);
         console.log(`[bot] ready as ${c.user.tag}; ${commands.length} commands registered ${this.d.guildId ? 'to guild ' + this.d.guildId : 'globally'}`);
       } catch (e) { console.error('[bot] command registration failed', e); this.status.detail += ' · command registration failed: ' + (e as Error).message; }
+      try { await applyGuildNicknames(c.guilds.cache.values(), this.d.nickname); }
+      catch (e) { console.warn(`[bot] nickname step failed: ${(e as Error).message}`); }
     });
     client.on(Events.InteractionCreate, (i) => this.onInteraction(i).catch((e) => console.error('[bot] interaction error', e)));
     if (this.d.vision) {
