@@ -4,7 +4,7 @@ const $app = document.getElementById('app');
 const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false, newsTab: 'sports' };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const u = (n) => (n == null ? '—' : `${n > 0 ? '+' : ''}${Number(n).toFixed(2)}u`);
+const u = (n) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);
 const cls = (n) => (n > 0 ? 'pos' : n < 0 ? 'neg' : '');
 const tzAbbr = new Intl.DateTimeFormat('en-US', { timeZoneName: 'short' }).formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value ?? '';
 const fmtTime = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) + ' ' + tzAbbr : '';
@@ -225,9 +225,9 @@ function miniLegs(s) {
 function slipCard(s) {
   const hd = `<div class="slip-hd">${av(s.user)}<div><div class="who">${esc(s.user)} ${s.demo ? '<span class="chip demo">DEMO</span>' : ''}</div><div class="sid"><a data-nav href="/slip/${esc(s.id)}">${esc(s.title || `${s.legCount}-leg slip`)} · ${esc(s.id)}</a></div></div><span class="spacer"></span>
     ${s.hidden ? `<span class="chip hidden">HIDDEN</span>` : `<span class="chip ${s.status}">${s.status === 'open' ? `${s.progress.won}/${s.legCount} HIT` : s.status.toUpperCase()}</span>`}</div>`;
-  if (s.hidden) return `<div class="card slip">${hd}<div class="locked">${svg.lock}<span>${s.legCount} leg(s) locked until ${esc(s.user)} reveals them or the slip settles.</span></div><div class="slip-ft"><span>Stake <b>${s.stake}u</b></span><span>Posted <span data-ago="${Date.parse(s.createdAt)}">${ago(Date.parse(s.createdAt))}</span></span></div></div>`;
+  if (s.hidden) return `<div class="card slip">${hd}<div class="locked">${svg.lock}<span>${s.legCount} leg(s) locked until ${esc(s.user)} reveals them or the slip settles.</span></div><div class="slip-ft"><span>Stake <b>${u(s.stake)}</b></span><span>Posted <span data-ago="${Date.parse(s.createdAt)}">${ago(Date.parse(s.createdAt))}</span></span></div></div>`;
   return `<div class="card slip">${hd}${miniLegs(s)}${s.note ? `<div class="note">“${esc(s.note)}”</div>` : ''}
-    <div class="slip-ft"><span>Stake <b>${s.stake}u</b></span><span>Odds <b>${esc(s.oddsText || '—')}</b></span><span>${s.status === 'open' ? 'To win' : 'Result'} <b class="${s.status === 'open' ? '' : cls(s.profit)}">${s.status === 'open' ? u(s.toWin) : s.status === 'review' ? 'needs review' : u(s.profit)}</b></span></div></div>`;
+    <div class="slip-ft"><span>Stake <b>${u(s.stake)}</b></span><span>Odds <b>${esc(s.oddsText || '—')}</b></span><span>${s.status === 'open' ? 'To win' : 'Result'} <b class="${s.status === 'open' ? '' : cls(s.profit)}">${s.status === 'open' ? u(s.toWin) : s.status === 'review' ? 'needs review' : u(s.profit)}</b></span></div></div>`;
 }
 function viewBoard() {
   const d = S.data.board;
@@ -244,7 +244,7 @@ function viewBoard() {
     html += `<section class="sec"><div class="poster"><div class="card"><div class="eyebrow">Tonight’s poster${p.pinned ? '' : ' · auto-picked (biggest to-win tonight)'}</div>
       <h3>${esc(p.title || `${p.user}’s ${p.legCount}-leg`)} ${p.demo ? '<span class="chip demo">DEMO</span>' : ''}</h3><div class="muted" style="font-size:13px;margin-bottom:12px">${esc(p.user)} · slip ${esc(p.id)}</div>
       ${miniLegs(p).replace('class="mini-legs"', 'class="mini-legs" style="padding:0"')}
-      <div class="meta"><span>Stake <b>${p.stake}u</b></span><span>Odds <b>${esc(p.oddsText)}</b></span><span>To win <b class="pos">${u(p.toWin)}</b></span>${p.firstStart ? `<span>First leg <b>${esc(fmtTime(p.firstStart))}</b></span>` : ''}</div></div></div></section>`;
+      <div class="meta"><span>Stake <b>${u(p.stake)}</b></span><span>Odds <b>${esc(p.oddsText)}</b></span><span>To win <b class="pos">${u(p.toWin)}</b></span>${p.firstStart ? `<span>First leg <b>${esc(fmtTime(p.firstStart))}</b></span>` : ''}</div></div></div></section>`;
   }
   html += `<section class="sec"><div class="sec-head"><h2>Open slips</h2><span class="count">${d.open.length}</span></div>${d.open.length ? `<div class="grid g3">${d.open.map(slipCard).join('')}</div>` : `<div class="card empty"><b>No open slips</b>Use /pick in Discord to post one.</div>`}</section>`;
   const periods = [['all', 'All time'], ['30d', '30 days'], ['7d', '7 days'], ['today', 'Today']];
@@ -254,7 +254,7 @@ function viewBoard() {
     <div class="card scroll-x">${lb.length ? `<table class="lb"><thead><tr><th>#</th><th>Member</th><th>Profit</th><th>Record</th><th>ROI</th><th class="hm">Risked</th><th class="hm">Form</th></tr></thead><tbody>
     ${lb.map((r) => `<tr><td class="rk">${r.rank}</td><td><div class="u">${av(r.user)}${esc(r.user)}${r.demo ? ' <span class="chip demo">DEMO</span>' : ''}</div></td>
       <td class="num"><span class="pbar"><i style="width:${(Math.abs(r.profit) / maxAbs * 100).toFixed(0)}%;background:${r.profit >= 0 ? 'var(--win)' : 'var(--loss)'}"></i></span><b class="${cls(r.profit)}">${u(r.profit)}</b></td>
-      <td class="num">${r.w}-${r.l}${r.p ? '-' + r.p : ''}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td><td class="num hm muted">${r.staked}u</td>
+      <td class="num">${r.w}-${r.l}${r.p ? '-' + r.p : ''}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td><td class="num hm muted">${u(r.staked)}</td>
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty"><b>No settled slips in this window</b>Rankings appear once slips grade.</div>`}</div></section>`;
   html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res">${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div><span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
@@ -308,8 +308,8 @@ function viewHeadlines(hl) {
 }
 
 // ---------- Slip page (ticket) ----------
-const money = (n, dollars) => (n == null ? '—' : dollars ? `$${Number(n).toFixed(2)}` : `${Number(n).toFixed(2)}u`);
-const signed = (n, dollars) => (n == null ? '—' : `${n > 0 ? '+' : n < 0 ? '−' : ''}${money(Math.abs(n), dollars)}`);
+const money = (n) => u(n);
+const signed = (n) => u(n);
 const fmtDate = (iso) => (iso ? new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleDateString([], { month: 'short', day: 'numeric' }) : '');
 const fmtStamp = (iso) => (iso ? new Date(iso.endsWith('Z') ? iso : iso + 'Z').toLocaleString([], { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : '');
 const WORD_CLS = { waiting: 'pending', hit: 'won', miss: 'lost', push: 'push', void: 'void', check: 'review' };
