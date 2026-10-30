@@ -11,6 +11,7 @@ import { deleteSlip, manualSettle, revealSlip, setPoster, SlipError, slipWithLeg
 import { importSlip, isFinalStatus, type FinalStatus } from './importer.ts';
 import { boardView, healthView, liveView, newsView, slipView, type Ctx } from './views.ts';
 import { dayInTz } from './util.ts';
+import { Headlines } from './news.ts';
 
 const MIME: Record<string, string> = {
   '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
@@ -67,10 +68,11 @@ async function body(req: http.IncomingMessage, limit = 64 * 1024): Promise<any> 
   return Object.fromEntries(new URLSearchParams(s));
 }
 
-export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminToken: string; publicUrl: string; groupName: string; onSlipCreated?: () => void }
+export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminToken: string; publicUrl: string; groupName: string; onSlipCreated?: () => void; headlines?: Headlines }
 
 export function createServer(deps: ServerDeps) {
   const { ctx, auth } = deps;
+  const headlines = deps.headlines ?? new Headlines();
   const pub = path.join(ROOT, 'public');
   let assets = loadAssets(pub);
   // Hot-reload static files in dev; production images are immutable anyway.
@@ -194,7 +196,7 @@ export function createServer(deps: ServerDeps) {
       if (!authed(req)) return send(req, res, 401, { error: 'sign in required' });
       if (p === '/api/live') return send(req, res, 200, await liveView(ctx, url.searchParams.get('all') === '1'));
       if (p === '/api/board') return send(req, res, 200, boardView(ctx, url.searchParams.get('period') ?? 'all'));
-      if (p === '/api/news') return send(req, res, 200, await newsView(ctx));
+      if (p === '/api/news') { const [n, headlines_] = await Promise.all([newsView(ctx), headlines.get()]); return send(req, res, 200, { ...n, headlines: headlines_ }); }
       if (p === '/api/health') return send(req, res, 200, healthView(ctx));
       const sm = p.match(/^\/api\/slips\/([A-Za-z0-9]+)$/);
       if (sm) { const s = slipWithLegs(ctx.db, sm[1].toUpperCase()); return s ? send(req, res, 200, slipView(s.slip, s.legs, ctx)) : send(req, res, 404, { error: 'no such slip' }); }

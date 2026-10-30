@@ -6,10 +6,14 @@ import { Resolver } from '../src/resolve.ts';
 import { createServer } from '../src/server.ts';
 import { fx, makeCtx } from './helpers.ts';
 import { leaderboard } from '../src/views.ts';
+import { readFileSync } from 'node:fs';
+import { Headlines } from '../src/news.ts';
 
 const { ctx, espn, db } = makeCtx({ 'nba/injuries': { injuries: [] }, 'nba/summary?event=401909881': fx('nba_summary_final'), 'nba/scoreboard': fx('nba_scoreboard_final'), 'nfl/scoreboard': { events: [] }, 'nhl/scoreboard': new Error('HTTP 500') });
 const auth = new Auth(db, 'test-secret', 'America/Chicago');
-const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'PICKS HQ' });
+const { server } = createServer({ ctx, auth, resolver: new Resolver(espn), adminToken: 'admintok', publicUrl: 'http://localhost', groupName: 'PICKS HQ',
+  headlines: new Headlines({ feeds: [{ id: 'espn', name: 'ESPN', section: 'sports', url: 'https://fake/espn' }, { id: 'g', name: 'Google News · Health', section: 'health', url: 'https://fake/g' }],
+    fetcher: async (u) => readFileSync(new URL(`./fixtures/${u.endsWith('espn') ? 'rss_espn' : 'rss_gnews'}.xml`, import.meta.url), 'utf8') }) });
 await new Promise<void>((r) => server.listen(0, r));
 const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
 after(() => { server.close(); ctx.engine.stop(); });
@@ -53,6 +57,11 @@ test('API requires sign-in; wrong key rejected; right key sets HttpOnly cookie; 
     const r = await fetch(base + p, { headers: { cookie } });
     assert.equal(r.status, 200, p);
   }
+  const news = await (await fetch(base + '/api/news', { headers: { cookie } })).json();
+  assert.ok(Array.isArray(news.injuries)); // existing injury notes untouched
+  assert.equal(news.headlines.sections.sports[0].source, 'ESPN');
+  assert.equal(news.headlines.sections.health[0].source, 'Yahoo');
+  assert.ok([...news.headlines.sections.sports, ...news.headlines.sections.health].every((h: any) => /^https?:\/\//.test(h.link)));
   const live = await (await fetch(base + '/api/live?all=1', { headers: { cookie } })).json();
   assert.deepEqual(live.slateErrors.map((e: any) => e.league), ['nhl']); // down feed surfaces as an error, not empty data
   await post('/api/logout', {}, { cookie });

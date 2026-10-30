@@ -258,6 +258,16 @@ h2{font-size:13px;text-transform:uppercase;letter-spacing:.12em;color:var(--gold
 .sp-leg .x{flex:1;font-weight:600}.sp-leg .x small{display:block;font-weight:400;opacity:.7}.sp-leg .w{font-size:13px;font-weight:700;opacity:.8}
 .sp-leg .w.won{color:var(--win)}.sp-leg .w.lost{color:var(--loss)}
 
+/* ---------- headlines (sports / health) ---------- */
+.nws{padding:12px 14px;border-top:1px solid var(--line)}
+.nws:first-child{border-top:0}
+.nws-t{display:block;font-weight:600;font-size:14.5px;line-height:1.4;color:var(--tx)}
+a.nws-t:hover{color:var(--gold2)}
+.nws:hover{background:rgba(200,16,46,.06);box-shadow:inset 3px 0 0 var(--crimson)}
+.nws-m{display:flex;gap:10px;flex-wrap:wrap;margin-top:5px;font-size:11.5px;color:var(--tx3)}
+.nws-src{font-weight:700;letter-spacing:.03em;color:var(--gold)}
+.nws-cred{font-size:11.5px;margin-top:8px}
+
 /* ---------- Geass accents (styling only) ---------- */
 ::selection{background:rgba(200,16,46,.55);color:#fff}
 a:focus-visible,button:focus-visible{outline:2px solid var(--gold2);outline-offset:2px}

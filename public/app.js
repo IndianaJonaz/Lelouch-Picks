@@ -1,7 +1,7 @@
 // PICKS HQ client — vanilla JS, no framework, ~1 request per view + SSE push.
 'use strict';
 const $app = document.getElementById('app');
-const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false };
+const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false, newsTab: 'sports' };
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const u = (n) => (n == null ? '—' : `${n > 0 ? '+' : ''}${Number(n).toFixed(2)}u`);
@@ -99,6 +99,7 @@ function render() {
   document.getElementById('logout').onclick = async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); S.es?.close(); S.es = null; S.me.authed = false; S.data = {}; render(); };
   $app.querySelectorAll('[data-period]').forEach((b) => (b.onclick = () => { S.period = b.dataset.period; load('board'); }));
   $app.querySelectorAll('[data-more]').forEach((b) => (b.onclick = () => { S.allRecent = true; render(); }));
+  $app.querySelectorAll('[data-newstab]').forEach((b) => (b.onclick = () => { S.newsTab = b.dataset.newstab; render(); }));
   $app.querySelectorAll('[data-all]').forEach((b) => (b.onclick = () => { S.showAll = b.dataset.all === '1'; render(); load('live'); }));
   renderFresh();
 }
@@ -263,10 +264,10 @@ function viewBoard() {
 // ---------- News & health ----------
 function viewNews() {
   const n = S.data.news, h = S.data.health;
-  const head = `<div class="page-head"><div><h1>News & health</h1><p>Injury notes for players on public slips, and whether every data feed is answering.</p></div></div>`;
+  const head = `<div class="page-head"><div><h1>News & health</h1><p>Sports and health headlines, injury notes for players on public slips, and whether every data feed is answering.</p></div></div>`;
   if (!n || !h) return head + skel(2);
   const sev = (s) => /out|reserve/i.test(s) ? 'out' : /doubt|quest|day/i.test(s) ? 'q' : 'ok';
-  let html = head;
+  let html = head + viewHeadlines(n.headlines);
   const feedErr = Object.entries(n.feeds).filter(([, f]) => !f.ok);
   html += `<section class="sec" style="margin-top:0"><div class="sec-head"><h2>Injury notes</h2><span class="count">${n.injuries.length} note(s) · ${n.tracked.length} player(s) tracked</span></div>
     ${feedErr.length ? `<div class="card err" style="margin-bottom:12px"><div class="err-line" style="border:0">⚠ Injury feed not answering for ${feedErr.map(([k, f]) => esc(k.toUpperCase()) + ' (' + esc(f.error) + ')').join(', ')} — notes for those leagues may be missing.</div></div>` : ''}
@@ -281,6 +282,29 @@ function viewNews() {
   html += `<section class="sec"><div class="sec-head"><h2>System</h2><span class="chip ${h.overall === 'ok' ? 'won' : 'lost'}">${h.overall.toUpperCase()}</span></div><div class="card">${comps}</div></section>
     <section class="sec"><div class="sec-head"><h2>Data feeds</h2><span class="count">ESPN public JSON · calls since server start</span></div><div class="card">${feeds || '<div class="empty">No feed calls yet.</div>'}</div></section>`;
   return html;
+}
+
+// Sports + health headlines (free public RSS, fetched + cached server-side). Fail-soft: a dead feed only adds a note.
+const safeHref = (h) => { try { const x = new URL(h); return x.protocol === 'http:' || x.protocol === 'https:' ? x.href : null; } catch { return null; } };
+const fmtNewsTime = (iso) => { if (!iso) return ''; const d = new Date(iso); if (isNaN(d)) return '';
+  const tz = S.me?.tz || 'America/Chicago';
+  const abbr = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(d).find((p) => p.type === 'timeZoneName')?.value ?? '';
+  return d.toLocaleString('en-US', { timeZone: tz, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) + ' ' + abbr; };
+function viewHeadlines(hl) {
+  const tabs = [['sports', 'Sports'], ['health', 'Health']];
+  const tab = S.newsTab === 'health' ? 'health' : 'sports';
+  const seg = `<div class="seg" role="tablist">${tabs.map(([k, l]) => `<button role="tab" aria-selected="${tab === k}" class="${tab === k ? 'on' : ''}" data-newstab="${k}">${l}${hl ? ` <span class="dim">${(hl.sections?.[k] || []).length}</span>` : ''}</button>`).join('')}</div>`;
+  const headHtml = `<div class="sec-head"><h2>Headlines</h2>${seg}<span class="count">${hl ? `updated <span data-ago="${hl.asOf}">${ago(hl.asOf)}</span>` : ''}</span></div>`;
+  if (!hl) return `<section class="sec" style="margin-top:0">${headHtml}<div class="card"><div class="empty"><b>Headlines unavailable</b>The news feeds didn’t answer. Injury notes and system status below are unaffected.</div></div></section>`;
+  const items = hl.sections?.[tab] || [];
+  const down = (hl.feeds || []).filter((f) => f.section === tab && !f.ok);
+  const rows = items.map((h) => { const href = safeHref(h.link); const t = esc(h.title);
+    return `<div class="nws">${href ? `<a class="nws-t" href="${esc(href)}" target="_blank" rel="noopener noreferrer">${t}</a>` : `<span class="nws-t">${t}</span>`}
+      <div class="nws-m"><span class="nws-src">${esc(h.source)}</span>${h.published ? `<span data-ago="${Date.parse(h.published)}">${ago(Date.parse(h.published))}</span><span>${esc(fmtNewsTime(h.published))}</span>` : ''}</div></div>`; }).join('');
+  return `<section class="sec" style="margin-top:0">${headHtml}
+    ${down.length ? `<div class="card err" style="margin-bottom:12px"><div class="err-line" style="border:0">⚠ ${down.map((f) => esc(f.name)).join(', ')} not answering — showing what the other ${tab} feeds returned.</div></div>` : ''}
+    <div class="card nws-list">${rows || `<div class="empty"><b>No ${tab} headlines right now</b>Feeds will be retried shortly.</div>`}</div>
+    <div class="nws-cred dim">Sources: ${(hl.feeds || []).filter((f) => f.section === tab).map((f) => esc(f.name)).join(' · ')} · public RSS</div></section>`;
 }
 
 // ---------- Slip page (ticket) ----------
