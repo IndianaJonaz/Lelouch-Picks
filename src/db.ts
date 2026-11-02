@@ -54,6 +54,8 @@ export interface Slip {
   payout: number | null;      // total payout as logged (won) or potential
   is_test: number;            // staff-channel test slip: kept off standings
   source_url: string | null;  // link to the original Discord message (no copy of the image is stored)
+  tier: string | null;        // visibility tier id; null / 'free' is public (Free Member)
+  settle_by: string | null;   // when grading should be finished (latest leg deadline)
 }
 
 export function openDb(file: string): DatabaseSync {
@@ -127,9 +129,18 @@ export function openDb(file: string): DatabaseSync {
   `);
   // Additive migrations for databases created before these columns existed.
   const have = new Set((db.prepare('PRAGMA table_info(slips)').all() as { name: string }[]).map((c) => c.name));
-  for (const [col, type] of [['book', 'TEXT'], ['play_type', 'TEXT'], ['odds_text', 'TEXT'], ['payout', 'REAL'], ['is_test', 'INTEGER NOT NULL DEFAULT 0'], ['source_url', 'TEXT']]) {
+  for (const [col, type] of [['book', 'TEXT'], ['play_type', 'TEXT'], ['odds_text', 'TEXT'], ['payout', 'REAL'], ['is_test', 'INTEGER NOT NULL DEFAULT 0'], ['source_url', 'TEXT'], ['tier', "TEXT NOT NULL DEFAULT 'free'"], ['settle_by', 'TEXT']]) {
     if (!have.has(col)) db.exec(`ALTER TABLE slips ADD COLUMN ${col} ${type}`);
   }
+  const sess = new Set((db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map((c) => c.name));
+  for (const [col, type] of [['viewer_user_id', 'TEXT'], ['viewer_name', 'TEXT'], ['viewer_tier', 'TEXT'], ['viewer_staff', 'INTEGER']]) {
+    if (!sess.has(col)) db.exec(`ALTER TABLE sessions ADD COLUMN ${col} ${type}`);
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS grade_posts (
+    slip_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    posted_at TEXT NOT NULL
+  )`);
   return db;
 }
 

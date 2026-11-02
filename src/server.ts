@@ -11,7 +11,9 @@ import { ParseError } from './parse.ts';
 import type { Resolver } from './resolve.ts';
 import { deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
 import { importSlip, isFinalStatus, type FinalStatus } from './importer.ts';
-import { boardView, healthView, liveView, newsView, profitSeries, slipImageRef, slipView, type Ctx } from './views.ts';
+import { INJURY_LEAGUES, InjuryReport } from './injuries.ts';
+import { canSeePick } from './tiers.ts';
+import { boardView, healthView, liveView, newsView, profitSeries, slipImageRef, slipView, weeklyView, type Ctx } from './views.ts';
 import type { SlipImage } from './bot.ts';
 import { dayInTz } from './util.ts';
 import { Headlines } from './news.ts';
@@ -88,6 +90,11 @@ export interface ServerDeps { ctx: Ctx; auth: Auth; resolver: Resolver; adminTok
 export function createServer(deps: ServerDeps) {
   const { ctx, auth } = deps;
   const headlines = deps.headlines ?? new Headlines();
+  const injuryReport = new InjuryReport({
+    leagues: INJURY_LEAGUES.filter((l) => ctx.leagues.includes(l)),
+    fetchLeague: async (lg) => (await ctx.espn.injuries(lg)).data,
+  });
+  const viewerOf = (req: http.IncomingMessage) => auth.sessionViewer(cookies(req)[COOKIE]) ?? { userId: null, tier: 'free', staff: false };
   const pub = path.join(ROOT, 'public');
   let assets = loadAssets(pub);
   // Hot-reload static files in dev; production images are immutable anyway.
@@ -174,13 +181,17 @@ export function createServer(deps: ServerDeps) {
       }
 
       // ---- public API ----
-      if (p === '/api/me') return send(req, res, 200, { authed: authed(req), demo: ctx.demo, group: deps.groupName, tz: ctx.tz });
+      if (p === '/api/me') {
+        const viewer = authed(req) ? auth.sessionViewer(cookies(req)[COOKIE]) : null;
+        return send(req, res, 200, { authed: authed(req), demo: ctx.demo, group: deps.groupName, tz: ctx.tz, viewer: viewer ? { tier: viewer.tier, staff: viewer.staff } : null });
+      }
       if (p === '/api/login' && req.method === 'POST') {
         if (!auth.allowAttempt(ip(req))) return send(req, res, 429, { error: 'Too many attempts. Wait 10 minutes.' });
         const b = await body(req);
         if (!auth.checkKey(String(b.key ?? ''))) { auth.recordFailure(ip(req)); return send(req, res, 401, { error: 'That key isn’t valid. Keys rotate daily — run /dashboard in Discord for today’s.' }); }
         const remember = b.remember === true || b.remember === 'true' || b.remember === 'on';
-        const s = auth.createSession(remember, String(req.headers['user-agent'] ?? ''));
+        const stamped = b.viewer ? auth.readViewer(String(b.viewer)) : null;
+        const s = auth.createSession(remember, String(req.headers['user-agent'] ?? ''), stamped);
         const cookie = `${COOKIE}=${s.token}; Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}${s.maxAge ? `; Max-Age=${s.maxAge}` : ''}`;
         return send(req, res, 200, { ok: true, persistent: remember }, { 'set-cookie': cookie });
       }
@@ -252,15 +263,39 @@ export function createServer(deps: ServerDeps) {
 
       // ---- signed-in API ----
       if (!authed(req)) return send(req, res, 401, { error: 'sign in required' });
-      if (p === '/api/live') return send(req, res, 200, await liveView(ctx, url.searchParams.get('all') === '1'));
-      if (p === '/api/board') return send(req, res, 200, boardView(ctx, url.searchParams.get('period') ?? 'all'));
-      if (p === '/api/news') { const [n, headlines_] = await Promise.all([newsView(ctx), headlines.get()]); return send(req, res, 200, { ...n, headlines: headlines_ }); }
+      const viewer = viewerOf(req);
+      if (p === '/api/viewer' && req.method === 'POST') {
+        const b = await body(req);
+        const stamped = auth.readViewer(String(b.viewer ?? ''));
+        if (!stamped) return send(req, res, 400, { error: 'That viewer link is expired or invalid.' });
+        auth.attachViewer(cookies(req)[COOKIE], stamped);
+        return send(req, res, 200, { ok: true, viewer: { tier: stamped.tier, staff: stamped.staff } });
+      }
+      if (p === '/api/live') return send(req, res, 200, await liveView(ctx, url.searchParams.get('all') === '1', viewer));
+      if (p === '/api/board') return send(req, res, 200, boardView(ctx, url.searchParams.get('period') ?? 'all', viewer));
+      if (p === '/api/weekly') return send(req, res, 200, weeklyView(ctx, Number(url.searchParams.get('week') ?? 0), url.searchParams.get('by') ?? 'analyst', viewer));
+      if (p === '/api/news') {
+        const [n, headlines_, report] = await Promise.all([
+          newsView(ctx, viewer),
+          headlines.get(),
+          injuryReport.get().catch((e: Error) => ({ asOf: Date.now(), cachedUntil: Date.now(), source: 'ESPN public injuries' as const, unavailable: true, error: e.message, leagues: [], players: [] })),
+        ]);
+        return send(req, res, 200, { ...n, headlines: headlines_, injuryReport: report });
+      }
       if (p === '/api/health') return send(req, res, 200, healthView(ctx));
-      if (p === '/api/profit') return send(req, res, 200, profitSeries(ctx, url.searchParams.get('user')));
+      if (p === '/api/profit') return send(req, res, 200, profitSeries(ctx, url.searchParams.get('user'), viewer));
       const im = p.match(/^\/api\/slips\/([A-Za-z0-9]+)\/image$/);
-      if (im && (req.method === 'GET' || req.method === 'HEAD')) return slipImage(req, res, im[1].toUpperCase());
+      if (im && (req.method === 'GET' || req.method === 'HEAD')) {
+        const s = slipWithLegs(ctx.db, im[1].toUpperCase());
+        if (!s || !canSeePick(s.slip, viewer)) return send(req, res, 404, { error: 'no such slip' });
+        return slipImage(req, res, im[1].toUpperCase());
+      }
       const sm = p.match(/^\/api\/slips\/([A-Za-z0-9]+)$/);
-      if (sm) { const s = slipWithLegs(ctx.db, sm[1].toUpperCase()); return s ? send(req, res, 200, slipView(s.slip, s.legs, ctx)) : send(req, res, 404, { error: 'no such slip' }); }
+      if (sm) {
+        const s = slipWithLegs(ctx.db, sm[1].toUpperCase());
+        if (!s || !canSeePick(s.slip, viewer)) return send(req, res, 404, { error: 'no such slip' });
+        return send(req, res, 200, slipView(s.slip, s.legs, ctx));
+      }
       if (p === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
         res.write(`retry: 5000\nevent: hello\ndata: ${JSON.stringify({ at: Date.now() })}\n\n`);

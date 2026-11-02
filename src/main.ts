@@ -11,6 +11,8 @@ import { Bot } from './bot.ts';
 import { hasDemo, seedDemo } from './demo.ts';
 import type { Ctx } from './views.ts';
 import { pgSnapshotStore, restoreSnapshot, Snapshotter, type SnapshotStore } from './persist.ts';
+import { ensureFeedCursor } from './layup.ts';
+import { parseLadder, parseStaff } from './tiers.ts';
 
 const GROUP = process.env.GROUP_NAME || 'Lelouch HQ';
 // Optional Postgres snapshot persistence (DATABASE_URL). Restore BEFORE opening SQLite.
@@ -45,9 +47,12 @@ const auth = new Auth(db, secret, config.tz);
 const resolver = new Resolver(espn);
 
 let bot: Bot | null = null;
-const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, demo: config.demo, bot: () => bot?.status ?? { status: 'idle', detail: 'not started', tag: null } };
+const ladder = parseLadder(config.tierLadder);
+const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, demo: config.demo, ladder, weekStart: config.weekStart, bot: () => bot?.status ?? { status: 'idle', detail: 'not started', tag: null } };
+ensureFeedCursor(db);
 bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP, nickname: config.botNickname,
-  vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds });
+  vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds,
+  ladder, staffRoles: parseStaff(config.staffRoleNames), layupChannelId: config.layupFeedChannelId });
 
 const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP, snapshots,
   slipImage: (channelId, messageId) => bot?.slipImage(channelId, messageId) ?? Promise.resolve(null) });

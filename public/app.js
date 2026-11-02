@@ -1,7 +1,7 @@
 // Lelouch HQ client — vanilla JS, no framework, ~1 request per view + SSE push.
 'use strict';
 const $app = document.getElementById('app');
-const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false, newsTab: 'sports' };
+const S = { me: null, view: null, data: {}, at: {}, err: {}, period: 'all', showAll: false, es: null, sseOk: false, newsTab: 'sports', weekOff: 0, weekBy: 'analyst', injLg: 'all', injTm: 'all' };
 const LS = { get: (k, d) => { try { return localStorage.getItem(k) ?? d; } catch { return d; } }, set: (k, v) => { try { localStorage.setItem(k, v); } catch {} } };
 S.bookF = LS.get('lhq.bookFilter', 'all'); S.sportF = LS.get('lhq.sportFilter', 'all'); S.pgOpen = LS.get('lhq.profitOpen', '1') === '1'; S.pgHidden = new Set(); S.pgFocus = null;
 
@@ -49,8 +49,22 @@ addEventListener('popstate', () => go());
 let wasNarrow = innerWidth < 600, rsT = null; // profit graph picks its viewBox by width: redraw when crossing the breakpoint
 addEventListener('resize', () => { clearTimeout(rsT); rsT = setTimeout(() => { const n = innerWidth < 600; if (n !== wasNarrow) { wasNarrow = n; if (S.view === 'board') render(); } }, 150); });
 
+function viewerToken() {
+  try {
+    const q = new URLSearchParams(location.search).get('v');
+    if (q) {
+      sessionStorage.setItem('lhq.viewer', q);
+      const u = new URL(location.href);
+      u.searchParams.delete('v');
+      history.replaceState(null, '', u.pathname + u.search + u.hash);
+    }
+    return sessionStorage.getItem('lhq.viewer');
+  } catch { return null; }
+}
 async function boot() {
+  const v = viewerToken();
   try { S.me = await api('/api/me'); } catch { S.me = { authed: false }; }
+  if (v && S.me?.authed && !S.me.viewer) { try { const r = await api('/api/viewer', { method: 'POST', body: JSON.stringify({ viewer: v }) }); S.me.viewer = r.viewer; } catch { /* link expired — stay on the free board */ } }
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
   go();
 }
@@ -63,9 +77,9 @@ async function load(view) {
     if (view === 'news') {
       const [n, h] = await Promise.all([api('/api/news'), api('/api/health')]);
       S.data.news = n; S.data.health = h;
-    } else if (view === 'board') {
-      const [b, pr] = await Promise.all([api(path), api('/api/profit').catch(() => S.data.profit ?? null)]);
-      S.data.board = b; S.data.profit = pr;
+    } else     if (view === 'board') {
+      const [b, pr, w] = await Promise.all([api(path), api('/api/profit').catch(() => S.data.profit ?? null), api(`/api/weekly?week=${S.weekOff}&by=${S.weekBy}`).catch(() => S.data.weekly ?? null)]);
+      S.data.board = b; S.data.profit = pr; S.data.weekly = w;
     } else S.data[view] = await api(path);
     S.at[view] = Date.now(); S.err[view] = null;
   } catch (e) { if (e.message !== 'signed out') S.err[view] = e.message; }
@@ -127,6 +141,10 @@ function render() {
     r.onkeydown = (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openSlipImage(r.dataset.img, r); } };
   });
   $app.querySelectorAll('[data-newstab]').forEach((b) => (b.onclick = () => { S.newsTab = b.dataset.newstab; render(); }));
+  $app.querySelectorAll('[data-weekoff]').forEach((b) => (b.onclick = () => { S.weekOff = Number(b.dataset.weekoff); load('board'); }));
+  $app.querySelectorAll('[data-weekby]').forEach((b) => (b.onclick = () => { S.weekBy = b.dataset.weekby; load('board'); }));
+  $app.querySelectorAll('[data-injlg]').forEach((b) => (b.onclick = () => { S.injLg = b.dataset.injlg; S.injTm = 'all'; render(); }));
+  $app.querySelectorAll('[data-injtm]').forEach((b) => (b.onchange = () => { S.injTm = b.value; render(); }));
   $app.querySelectorAll('[data-all]').forEach((b) => (b.onclick = () => { S.showAll = b.dataset.all === '1'; render(); load('live'); }));
   renderFresh();
 }
@@ -199,7 +217,7 @@ function renderLogin() {
     b.disabled = true; le.textContent = '';
     try {
       const remember = new FormData(e.target).get('remember') === '1';
-      await api('/api/login', { method: 'POST', body: JSON.stringify({ key: key.value, remember }) });
+      await api('/api/login', { method: 'POST', body: JSON.stringify({ key: key.value, remember, viewer: viewerToken() }) });
       S.me.authed = true;
       if (!ROUTES[location.pathname]) history.replaceState(null, '', '/board');
       go();
@@ -270,15 +288,30 @@ function viewLive() {
 }
 
 // ---------- Board ----------
-function miniLegs(s) {
-  return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${stIc(l.status)}<div class="x">${esc(l.text)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small></div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
+function legMark(l, open) {
+  if (!open) return stIc(l.status);
+  if (l.mark === 'hit' || l.status === 'won') return '<span class="leg-hit" title="Hit" aria-label="Hit">✓</span>';
+  if (l.mark === 'miss' || l.status === 'lost') return '<span class="leg-miss" title="Miss" aria-label="Miss">✗</span>';
+  return '<span class="leg-none" aria-hidden="true"></span>';
+}
+const fmtSettle = (iso) => {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const tz = S.me?.tz || 'America/Chicago';
+  const clock = d.toLocaleString('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
+  const abbr = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(d).find((p) => p.type === 'timeZoneName')?.value ?? '';
+  return `${clock} ${abbr}`.trim();
+};
+function miniLegs(s, open) {
+  return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${legMark(l, open)}<div class="x">${esc(l.text)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small></div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
 }
 function slipCard(s) {
   const hd = `<div class="slip-hd">${av(s.user)}<div><div class="who">${esc(s.user)} ${s.demo ? '<span class="chip demo">DEMO</span>' : ''}</div><div class="sid"><a data-nav href="/slip/${esc(s.id)}">${esc(s.title || `${s.legCount}-leg slip`)} · ${esc(s.id)}</a></div></div><span class="spacer"></span>
-    ${s.hidden ? `<span class="chip hidden">HIDDEN</span>` : `<span class="chip ${s.status}">${s.status === 'open' ? `${s.progress.won}/${s.legCount} HIT` : s.status.toUpperCase()}</span>`}</div>`;
+    ${s.overdue ? '<span class="chip overdue">OVERDUE</span>' : ''}${s.hidden ? `<span class="chip hidden">HIDDEN</span>` : `<span class="chip ${s.status}">${s.status === 'open' ? `${s.progress.won}/${s.legCount} HIT` : s.status.toUpperCase()}</span>`}</div>`;
   if (s.hidden) return `<div class="card slip">${hd}<div class="locked">${svg.lock}<span>${s.legCount} leg(s) locked until ${esc(s.user)} reveals them or the slip settles.</span></div><div class="slip-ft"><span>Stake <b>${u(s.stake)}</b></span><span>Posted <span data-ago="${Date.parse(s.createdAt)}">${ago(Date.parse(s.createdAt))}</span></span></div></div>`;
-  return `<div class="card slip">${hd}${miniLegs(s)}${s.note ? `<div class="note">“${esc(s.note)}”</div>` : ''}
-    <div class="slip-ft"><span>Stake <b>${u(s.stake)}</b></span><span>Odds <b>${esc(s.oddsText || '—')}</b></span><span>${s.status === 'open' ? 'To win' : 'Result'} <b class="${s.status === 'open' ? '' : cls(s.profit)}">${s.status === 'open' ? u(s.toWin) : s.status === 'review' ? 'needs review' : u(s.profit)}</b></span></div></div>`;
+  const by = s.status === 'open' && s.settleBy ? `<span>Settles by <b>${esc(fmtSettle(s.settleBy))}</b></span>` : '';
+  return `<div class="card slip">${hd}${miniLegs(s, s.status === 'open')}${s.note ? `<div class="note">“${esc(s.note)}”</div>` : ''}
+    <div class="slip-ft"><span>Stake <b>${u(s.stake)}</b></span><span>Odds <b>${esc(s.oddsText || '—')}</b></span>${by}<span>${s.status === 'open' ? 'To win' : 'Result'} <b class="${s.status === 'open' ? '' : cls(s.profit)}">${s.status === 'open' ? u(s.toWin) : s.status === 'review' ? 'needs review' : u(s.profit)}</b></span></div></div>`;
 }
 // ---------- open slips: book + sport filter tabs ----------
 const BOOKS = [['all', 'All'], ['prizepicks', 'PrizePicks'], ['kalshi', 'Kalshi'], ['other', 'Other']];
@@ -371,6 +404,7 @@ function viewBoard() {
       <td class="num">${r.w}-${r.l}${r.p ? '-' + r.p : ''}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td><td class="num hm muted">${u(r.staked)}</td>
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty"><b>No settled slips in this window</b>Rankings appear once slips grade.</div>`}</div></section>`;
+  html += viewWeekly(S.data.weekly);
   html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res${s.hasImage ? ' has-img' : ''}"${s.hasImage ? ` data-img="${esc(s.id)}" role="button" tabindex="0" aria-label="View slip screenshot ${esc(s.id)}"` : ''}>${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div>${s.hasImage ? `<span class="img-ic" title="View slip screenshot">${svg.img}</span>` : ''}<span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
   return html;
 }
@@ -381,7 +415,7 @@ function viewNews() {
   const head = `<div class="page-head"><div><h1>News & health</h1><p>Sports and health headlines, injury notes for players on public slips, and whether every data feed is answering.</p></div></div>`;
   if (!n || !h) return head + skel(2);
   const sev = (s) => /out|reserve/i.test(s) ? 'out' : /doubt|quest|day/i.test(s) ? 'q' : 'ok';
-  let html = head + viewHeadlines(n.headlines);
+  let html = head + viewHeadlines(n.headlines) + viewInjuryReport(n.injuryReport);
   const feedErr = Object.entries(n.feeds).filter(([, f]) => !f.ok);
   html += `<section class="sec" style="margin-top:0"><div class="sec-head"><h2>Injury notes</h2><span class="count">${n.injuries.length} note(s) · ${n.tracked.length} player(s) tracked</span></div>
     ${feedErr.length ? `<div class="card err" style="margin-bottom:12px"><div class="err-line" style="border:0">⚠ Injury feed not answering for ${feedErr.map(([k, f]) => esc(k.toUpperCase()) + ' (' + esc(f.error) + ')').join(', ')} — notes for those leagues may be missing.</div></div>` : ''}
@@ -396,6 +430,37 @@ function viewNews() {
   html += `<section class="sec"><div class="sec-head"><h2>System</h2><span class="chip ${h.overall === 'ok' ? 'won' : 'lost'}">${h.overall.toUpperCase()}</span></div><div class="card">${comps}</div></section>
     <section class="sec"><div class="sec-head"><h2>Data feeds</h2><span class="count">ESPN public JSON · calls since server start</span></div><div class="card">${feeds || '<div class="empty">No feed calls yet.</div>'}</div></section>`;
   return html;
+}
+
+function viewWeekly(w) {
+  const by = [['analyst', 'By analyst'], ['sport', 'By sport']];
+  const weeks = w?.weeks || [];
+  const seg = `<div class="seg">${by.map(([k, l]) => `<button data-weekby="${k}" class="${S.weekBy === k ? 'on' : ''}">${l}</button>`).join('')}</div>`;
+  const picks = weeks.length ? `<div class="seg wk-weeks">${weeks.map((wk) => `<button data-weekoff="${wk.offset}" class="${Number(S.weekOff) === wk.offset ? 'on' : ''}">${esc(wk.label)}</button>`).join('')}</div>` : '';
+  const head = `<div class="sec-head"><h2>This week</h2><span class="count">record · profit · ROI</span><span class="spacer" style="flex:1"></span>${seg}</div>`;
+  if (!w) return `<section class="sec wk">${head}<div class="card empty">Weekly record unavailable.</div></section>`;
+  const rows = w.rows || [];
+  const body = rows.length ? `<table class="lb"><thead><tr><th>#</th><th>${w.by === 'sport' ? 'Sport' : 'Analyst'}</th><th>Record</th><th>Profit</th><th>ROI</th></tr></thead><tbody>
+    ${rows.map((r) => `<tr><td class="rk">${r.rank}</td><td>${esc(r.label)}</td><td class="num">${r.w}-${r.l}-${r.p}</td><td class="num ${cls(r.profit)}">${u(r.profit)}</td><td class="num ${cls(r.roi)}">${r.roi > 0 ? '+' : ''}${r.roi}%</td></tr>`).join('')}
+    </tbody></table>` : `<div class="empty"><b>No settled slips this week</b>${esc(w.week?.label || '')}</div>`;
+  return `<section class="sec wk">${head}${picks}<div class="card scroll-x">${body}</div></section>`;
+}
+
+function viewInjuryReport(rep) {
+  const when = rep?.asOf ? `updated <span data-ago="${rep.asOf}">${ago(rep.asOf)}</span>` : '';
+  const head = `<div class="sec-head"><h2>Injury report</h2><span class="count">${esc(rep?.source || 'ESPN public injuries')}${when ? ' · ' + when : ''}</span></div>`;
+  if (!rep || rep.unavailable) return `<section class="sec">${head}<div class="card"><div class="empty"><b>Injury report unavailable</b>The injury feed didn’t answer. No player was marked Active or Out.</div></div></section>`;
+  const leagues = [...new Set(rep.players.map((p) => p.league))];
+  const lg = S.injLg === 'all' || leagues.includes(S.injLg) ? S.injLg : 'all';
+  const inLg = rep.players.filter((p) => lg === 'all' || p.league === lg);
+  const teams = [...new Set(inLg.map((p) => p.team).filter(Boolean))].sort();
+  const tm = S.injTm === 'all' || teams.includes(S.injTm) ? S.injTm : 'all';
+  const shown = inLg.filter((p) => tm === 'all' || p.team === tm);
+  const chips = [['all', 'All'], ...leagues.map((k) => [k, (rep.players.find((p) => p.league === k)?.leagueLabel || k)])];
+  const tabs = `<div class="ftabs">${chips.map(([k, l]) => `<button data-injlg="${esc(k)}" class="${lg === k ? 'on' : ''}">${esc(l)}</button>`).join('')}</div>`;
+  const select = `<select class="inj-team" data-injtm aria-label="Team">${['all', ...teams].map((t) => `<option value="${esc(t)}"${tm === t ? ' selected' : ''}>${t === 'all' ? 'All teams' : esc(t)}</option>`).join('')}</select>`;
+  const rows = shown.map((p) => `<div class="inj-row"><span class="ibadge ${p.badge === 'Out' ? 'out' : 'active'}">${esc(p.badge)}</span><div><div class="who">${esc(p.player)} <span class="dim">· ${esc(p.team || p.teamName)} · ${esc(p.leagueLabel)}</span></div><div class="ibadge-sub">${esc(p.designation || 'No designation')}${p.note ? ` · ${esc(p.note)}` : ''}</div></div></div>`).join('');
+  return `<section class="sec">${head}<div class="filters">${tabs}${select}</div><div class="card">${rows || `<div class="empty"><b>No players listed</b>This feed didn’t include anyone for that filter.</div>`}</div><div class="nws-cred dim">${esc(rep.source)} · Active means the feed did not list them Out, IR, or Suspended.</div></section>`;
 }
 
 // Sports + health headlines (free public RSS, fetched + cached server-side). Fail-soft: a dead feed only adds a note.

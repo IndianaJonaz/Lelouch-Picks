@@ -79,6 +79,10 @@ curl -X POST $URL/api/admin/import -H "authorization: Bearer $ADMIN_TOKEN" -H 'c
 | `XAI_MODEL` | | `grok-4.3` | Any vision-capable xAI model. |
 | `DISCORD_STAFF_CHANNEL_IDS` | | | Staff channel IDs. Screenshots confirmed there are marked **test** and left out of standings. |
 | `DISCORD_SLIP_CHANNEL_IDS` | | | Comma-separated channel IDs to read screenshots in (threads under them count). Blank = any channel the bot can see. |
+| `LAYUP_FEED_CHANNEL_ID` | | | Graded slips are posted here. Blank = the channel whose name contains `layup-feed` (🏀︱layup-feed). |
+| `TIER_LADDER` | | Free Member < Moneyline < VIP < Deluxe < Lifetime | `id:Label` pairs, lowest first. A pick's default tier is `free`, so existing slips stay public. |
+| `STAFF_ROLE_NAMES` | | Admin, Moderator, Analyst Mods, Support | These roles see every tier. The bot does not create or edit roles. |
+| `WEEK_START` | | `monday` | `monday` or `sunday`, in `GROUP_TZ`, for the weekly record. |
 
 ## Create the Discord bot and invite it
 
@@ -110,6 +114,18 @@ healthcheck) and a `railway.json` (Dockerfile builder, `/healthz` healthcheck, r
 5. Keep **one replica**. SQLite and the in-process bot each assume a single instance.
 
 Any other Docker host works the same way: `docker build -t picks-hq . && docker run -p 8080:8080 -v picks:/data --env-file .env picks-hq`.
+
+## Tiers, weekly board, injuries, grading feed
+
+Picks carry a tier (`/pick tier:VIP`, default Free Member). A member sees that tier and everything below it. Staff roles see every tier. The dashboard learns who they are from the link `/dashboard` gives them; a key with no link is the Free view, which is every slip that existed before tiers.
+
+The board has a weekly record (wins–losses–pushes, profit, ROI) for this week or a previous one, by analyst or by sport. Weeks start Monday in `GROUP_TZ`.
+
+News keeps Sports and Health headlines and the slip injury notes. Under them, the injury report lists players as **Active** or **Out** (Out, IR, Suspended, and the other season-ending designations are Out; Questionable, Doubtful, Day-to-Day, and a blank designation are Active). The feed’s own words stay under the badge. If ESPN doesn’t answer, the section says unavailable and invents nothing.
+
+Open slips show a green ✓ on a leg the grader has already won (an over that cleared, or a final game) and the time the slip should be done (`Settles by …`). Game legs use the latest start plus 12 hours. A Kalshi leg uses its close when the text or start time has one. Past that time, the grader tries once more; anything it still can’t resolve stays pending and the card shows an amber **OVERDUE** badge.
+
+PrizePicks (also “PricePicks”) and DraftKings settle from the same ESPN box scores. PrizePicks drops a DNP and, on a flex, records hits out of the remaining legs using the published flex chart. DraftKings drops a push or void on a parlay and grades a single as itself. Kalshi and every other book keep the original settlement. Graded slips post once to layup-feed.
 
 ## Layout
 

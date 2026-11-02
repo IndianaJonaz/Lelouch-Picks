@@ -44,6 +44,14 @@ export const config = {
   // Optional Postgres (e.g. Neon) URL: when set, the SQLite DB is snapshotted there and restored on boot. Never logged.
   databaseUrl: env.DATABASE_URL || '',
   isTest: env.NODE_ENV === 'test',
+  /** Discord channel id for graded-result posts. Blank = find a channel named layup-feed. */
+  layupFeedChannelId: env.LAYUP_FEED_CHANNEL_ID || '',
+  /** id:Label pairs, lowest tier first. Blank = Free Member < Moneyline < VIP < Deluxe < Lifetime. */
+  tierLadder: env.TIER_LADDER || '',
+  /** Role names that see every tier. Blank = Admin, Moderator, Analyst Mods, Support. */
+  staffRoleNames: env.STAFF_ROLE_NAMES || '',
+  /** Week boundary for the weekly board. "sunday" or "monday" (default). */
+  weekStart: (env.WEEK_START || 'monday').toLowerCase() === 'sunday' ? 'sunday' as const : 'monday' as const,
 };
 
 export type Config = typeof config;
