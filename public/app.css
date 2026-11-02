@@ -337,3 +337,17 @@ body.lbx-open{overflow:hidden}
 /* ---------- holiday banner: sits at the top of the leaderboard, under the profit graph ---------- */
 .hol-banner{margin:0 0 14px;padding:11px 18px;text-align:center;font-size:15px;font-weight:700;letter-spacing:.06em;line-height:1.35;color:var(--gold2);background:radial-gradient(480px 80px at 50% 120%,rgba(200,16,46,.5),transparent 72%),linear-gradient(90deg,rgba(139,0,0,.62),rgba(42,7,16,.4) 20%,rgba(11,11,13,.2) 50%,rgba(42,7,16,.4) 80%,rgba(139,0,0,.62));border:1px solid rgba(212,175,55,.6);border-radius:999px;box-shadow:0 0 0 1px rgba(200,16,46,.4),0 10px 28px -14px rgba(200,16,46,.85),inset 0 0 22px rgba(212,175,55,.1);text-shadow:0 0 14px rgba(242,201,76,.4)}
 @media (max-width:560px){.hol-banner{font-size:13px;letter-spacing:.03em;padding:10px 12px}}
+
+/* ---------- open slips: hit check, settle-by, overdue ---------- */
+.leg-hit,.leg-miss,.leg-none{width:18px;flex:none;text-align:center;font-weight:900;font-size:15px;line-height:1.2}
+.leg-hit{color:#3ddc97}
+.leg-miss{color:#ff4d5e;opacity:.55}
+.chip.overdue{background:rgba(245,158,11,.18);color:#fcd34d;border:1px solid rgba(245,158,11,.5)}
+.wk-weeks{display:flex;flex-wrap:wrap;gap:0;margin:0 0 12px}
+.inj-team{margin:0 0 12px;background:#141016;color:var(--tx);border:1px solid var(--line2);border-radius:10px;padding:8px 10px;font:inherit}
+.inj-row{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-top:1px solid var(--line)}
+.inj-row:first-child{border-top:0}
+.ibadge{flex:none;min-width:64px;text-align:center;font-size:11px;font-weight:800;letter-spacing:.06em;text-transform:uppercase;padding:4px 8px;border-radius:999px}
+.ibadge.active{background:rgba(212,175,55,.16);color:#f6dc84;border:1px solid rgba(212,175,55,.45)}
+.ibadge.out{background:rgba(200,16,46,.22);color:#ffb3bd;border:1px solid rgba(200,16,46,.55)}
+.ibadge-sub{color:var(--tx3);font-size:12px;margin-top:2px}

@@ -27,3 +27,6 @@ services:
       # Optional: staff channel IDs; screenshots confirmed there are test slips (kept out of standings).
       - key: DISCORD_STAFF_CHANNEL_IDS
         sync: false
+      # Graded-result channel. Blank = look up a channel named layup-feed.
+      - key: LAYUP_FEED_CHANNEL_ID
+        sync: false

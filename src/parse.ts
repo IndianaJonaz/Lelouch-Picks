@@ -18,7 +18,7 @@ export interface ParsedLeg {
 
 export class ParseError extends Error {}
 
-const OU = '(o|u|over|under)';
+const OU = '(over|under|more|less|o|u)';
 const NUM = '(\\d+(?:\\.\\d+)?)';
 
 export function splitLegs(text: string): string[] {
@@ -42,7 +42,7 @@ export function parseLeg(input: string): ParsedLeg {
     const v = Number(om[1]);
     if (Math.abs(v) >= 100) { odds = v; s = s.slice(0, om.index).trim(); }
   }
-  const side = (t: string) => (t.toLowerCase().startsWith('o') ? 'over' : 'under') as 'over' | 'under';
+  const side = (t: string) => (/^(o|over|more)$/i.test(t) ? 'over' : 'under') as 'over' | 'under';
   const base = { raw, league, odds, subject2: null as string | null };
   let m: RegExpMatchArray | null;
 

@@ -5,11 +5,24 @@ import type { Leg, Slip } from './db.ts';
 import { LEAGUES, type Espn, type FeedHealth, type Game } from './espn.ts';
 import type { Engine } from './engine.ts';
 import { paceFor, toWin } from './grading.ts';
+import { isOverdue, openLegMark } from './settleby.ts';
 import { statLabel } from './stats.ts';
 import { isPublic } from './store.ts';
+import { canSeePick, DEFAULT_LADDER, type TierDef, type Viewer } from './tiers.ts';
 import { addDays, americanToDecimal, dayInTz, fmtOdds, normName, round2 } from './util.ts';
+import { summarizeWeek, weekWindow, type WeekBy, type WeekStart } from './weekly.ts';
 
-export interface Ctx { db: DatabaseSync; espn: Espn; engine: Engine; tz: string; leagues: string[]; demo: boolean; bot: () => { status: string; detail: string | null; tag: string | null } }
+export interface Ctx {
+  db: DatabaseSync; espn: Espn; engine: Engine; tz: string; leagues: string[]; demo: boolean;
+  bot: () => { status: string; detail: string | null; tag: string | null };
+  ladder?: TierDef[];
+  weekStart?: WeekStart;
+}
+
+function ladderOf(ctx: Ctx): TierDef[] { return ctx.ladder?.length ? ctx.ladder : DEFAULT_LADDER; }
+function seen(ctx: Ctx, slip: { tier?: string | null; user_id?: string | null }, viewer?: Viewer | null) {
+  return !viewer || canSeePick(slip, viewer, ladderOf(ctx));
+}
 
 export function legText(l: Pick<Leg, 'type' | 'player' | 'team' | 'side' | 'line' | 'stat' | 'league' | 'event_name'>): string {
   const sideTxt = l.side === 'over' ? 'o' : 'u';
@@ -60,6 +73,8 @@ function publicLeg(l: Leg, ctx: Ctx) {
     id: l.id, league: l.league, leagueLabel: LEAGUES[l.league]?.label ?? l.league, type: l.type, text: legText(l), raw: l.raw,
     player: l.player, team: l.team, stat: l.stat, statLabel: statLabel(l.league, l.stat), side: l.side, line: l.line, odds: l.odds, oddsText: fmtOdds(l.odds),
     status: l.status, statusWord: LEG_WORD[l.status] ?? l.status, actual: l.actual, detail: l.detail, ticketText: ticketLegText(l), headshot: headshot(l),
+    /** Open-slip hit mark: 'hit' only once the grader has the leg won. Pending is null. */
+    mark: openLegMark(l.status),
     event: l.event_id ? { id: l.event_id, name: l.event_name, start: l.start_time, state: snap?.game.state ?? null, detail: snap?.game.detail ?? null } : null,
     pace,
   };
@@ -110,6 +125,10 @@ export function slipView(slip: Slip, legs: Leg[], ctx: Ctx) {
     /** Hidden slips expose no sport (it would hint at the legs); they only show under "All". */
     sports: pub ? slipSports(legs.map((l) => l.league)) : [] as string[],
     progress: { won: legs.filter((l) => l.status === 'won').length, lost: legs.filter((l) => l.status === 'lost').length, pending: legs.filter((l) => l.status === 'pending').length },
+    tier: slip.tier || 'free',
+    /** Hidden slips don't expose the deadline (it would timestamp the secret games). */
+    settleBy: pub ? (slip.settle_by ?? null) : null,
+    overdue: isOverdue(slip, legs),
   };
   if (!pub) return { ...base, progress: { won: 0, lost: 0, pending: legs.length }, odds: null, oddsText: '', toWin: null, note: null, legs: [] as ReturnType<typeof publicLeg>[], ticket: null as ReturnType<typeof ticket> | null, firstStart: null };
   return {
@@ -135,9 +154,9 @@ const gameView = (g: Game) => ({
 });
 
 // ---------- Live ----------
-export async function liveView(ctx: Ctx, includeAll: boolean) {
+export async function liveView(ctx: Ctx, includeAll: boolean, viewer?: Viewer | null) {
   const since = new Date(Date.now() - 18 * 3600_000).toISOString();
-  const rows = loadSlips(ctx, `status = 'open' OR settled_at >= ? OR id IN (SELECT slip_id FROM legs WHERE start_time >= ?)`, [since, since]);
+  const rows = loadSlips(ctx, `status = 'open' OR settled_at >= ? OR id IN (SELECT slip_id FROM legs WHERE start_time >= ?)`, [since, since]).filter((r) => seen(ctx, r.slip, viewer));
   const byEvent = new Map<string, { leg: ReturnType<typeof publicLeg>; slipId: string; user: string; demo: boolean }[]>();
   let hiddenLegs = 0;
   for (const { slip, legs } of rows) {
@@ -171,12 +190,13 @@ export async function liveView(ctx: Ctx, includeAll: boolean) {
 }
 
 // ---------- Board ----------
-export function leaderboard(ctx: Ctx, period: string) {
+export function leaderboard(ctx: Ctx, period: string, viewer?: Viewer | null) {
   const days = period === '7d' ? 7 : period === '30d' ? 30 : period === 'today' ? 1 : null;
   const since = days ? new Date(Date.now() - days * 86400_000).toISOString() : '0';
-  const rows = ctx.db.prepare(`SELECT user_id, user_name, status, stake, profit, is_demo FROM slips WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND is_test = 0 AND settled_at >= ? ORDER BY settled_at`).all(since) as any[];
+  const rows = ctx.db.prepare(`SELECT user_id, user_name, status, stake, profit, is_demo, tier FROM slips WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND is_test = 0 AND settled_at >= ? ORDER BY settled_at`).all(since) as any[];
   const m = new Map<string, any>();
   for (const r of rows) {
+    if (!seen(ctx, r, viewer)) continue;
     const u = m.get(r.user_id) ?? { userId: r.user_id, user: r.user_name, profit: 0, staked: 0, w: 0, l: 0, p: 0, slips: 0, streak: '', demo: !!r.is_demo, last: [] as string[] };
     u.user = r.user_name; u.profit += r.profit; u.slips++;
     if (r.status === 'won') u.w++; else if (r.status === 'lost') u.l++; else u.p++;
@@ -199,11 +219,12 @@ export interface ProfitPoint { t: string; slipId: string; status: string; delta:
  * Cumulative profit per member from settled, non-test slips, ordered by settle time (created time when a row has no
  * settled_at — flagged approxTime). Pushes/voids add a 0-change point. Grouped by Discord user id, latest display name.
  */
-export function profitSeries(ctx: Ctx, userId?: string | null) {
-  const rows = ctx.db.prepare(`SELECT id, user_id, user_name, status, profit, is_demo, settled_at, created_at, coalesce(settled_at, created_at) AS t FROM slips
+export function profitSeries(ctx: Ctx, userId?: string | null, viewer?: Viewer | null) {
+  const rows = ctx.db.prepare(`SELECT id, user_id, user_name, status, profit, is_demo, tier, settled_at, created_at, coalesce(settled_at, created_at) AS t FROM slips
     WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND is_test = 0 ${userId ? 'AND user_id = ?' : ''} ORDER BY t, id`).all(...(userId ? [userId] : [])) as any[];
   const m = new Map<string, { userId: string; user: string; demo: boolean; profit: number; points: ProfitPoint[] }>();
   for (const r of rows) {
+    if (!seen(ctx, r, viewer)) continue;
     const u = m.get(r.user_id) ?? { userId: r.user_id, user: r.user_name, demo: !!r.is_demo, profit: 0, points: [] as ProfitPoint[] };
     const delta = r.status === 'won' || r.status === 'lost' ? round2(r.profit) : 0;
     u.user = r.user_name; u.profit = round2(u.profit + delta);
@@ -213,26 +234,59 @@ export function profitSeries(ctx: Ctx, userId?: string | null) {
   return { asOf: Date.now(), users: [...m.values()].sort((a, b) => b.profit - a.profit || a.user.localeCompare(b.user)) };
 }
 
-export function boardView(ctx: Ctx, period: string) {
+export function boardView(ctx: Ctx, period: string, viewer?: Viewer | null) {
   const today = dayInTz(new Date(), ctx.tz);
-  const open = loadSlips(ctx, `status IN ('open','review') ORDER BY created_at DESC LIMIT 200`).map(({ slip, legs }) => slipView(slip, legs, ctx));
-  const recent = loadSlips(ctx, `status NOT IN ('open','review') AND settled_at >= ? ORDER BY settled_at DESC LIMIT 40`, [new Date(Date.now() - 7 * 86400_000).toISOString()]).map(({ slip, legs }) => slipView(slip, legs, ctx));
+  const open = loadSlips(ctx, `status IN ('open','review') ORDER BY created_at DESC LIMIT 200`).filter((r) => seen(ctx, r.slip, viewer)).map(({ slip, legs }) => slipView(slip, legs, ctx));
+  const recent = loadSlips(ctx, `status NOT IN ('open','review') AND settled_at >= ? ORDER BY settled_at DESC LIMIT 40`, [new Date(Date.now() - 7 * 86400_000).toISOString()]).filter((r) => seen(ctx, r.slip, viewer)).map(({ slip, legs }) => slipView(slip, legs, ctx));
   // Tonight's poster: pinned by an admin for today, else the public open slip with the biggest to-win that starts today.
   let poster: any = null;
   const pinned = loadSlips(ctx, `poster_day = ?`, [today])[0];
-  if (pinned && isPublic(pinned.slip)) poster = { ...slipView(pinned.slip, pinned.legs, ctx), pinned: true };
+  if (pinned && isPublic(pinned.slip) && seen(ctx, pinned.slip, viewer)) poster = { ...slipView(pinned.slip, pinned.legs, ctx), pinned: true };
   else {
     const cands = open.filter((s) => !s.hidden && s.status === 'open' && s.firstStart && dayInTz(new Date(s.firstStart), ctx.tz) === today);
     cands.sort((a, b) => (b.toWin ?? 0) - (a.toWin ?? 0));
     if (cands[0]) poster = { ...cands[0], pinned: false };
   }
-  const totals = ctx.db.prepare(`SELECT count(*) AS n, sum(CASE WHEN status='won' THEN 1 ELSE 0 END) AS w, sum(CASE WHEN status='lost' THEN 1 ELSE 0 END) AS l, round(coalesce(sum(profit),0),2) AS profit FROM slips WHERE status IN ('won','lost','push','void') AND is_test = 0`).get() as any;
-  return { asOf: Date.now(), today, open, recent, poster, leaderboard: leaderboard(ctx, period), period, totals };
+  const totals = viewer
+    ? (() => {
+      const rows = (ctx.db.prepare(`SELECT user_id, tier, status, profit FROM slips WHERE status IN ('won','lost','push','void') AND is_test = 0`).all() as any[]).filter((r) => seen(ctx, r, viewer));
+      return { n: rows.length, w: rows.filter((r) => r.status === 'won').length, l: rows.filter((r) => r.status === 'lost').length, profit: round2(rows.reduce((s, r) => s + (r.profit ?? 0), 0)) };
+    })()
+    : ctx.db.prepare(`SELECT count(*) AS n, sum(CASE WHEN status='won' THEN 1 ELSE 0 END) AS w, sum(CASE WHEN status='lost' THEN 1 ELSE 0 END) AS l, round(coalesce(sum(profit),0),2) AS profit FROM slips WHERE status IN ('won','lost','push','void') AND is_test = 0`).get() as any;
+  return { asOf: Date.now(), today, open, recent, poster, leaderboard: leaderboard(ctx, period, viewer), period, totals };
+}
+
+export function weeklyView(ctx: Ctx, offset: number, by: string, viewer?: Viewer | null, now = new Date()) {
+  const off = Math.min(12, Math.max(0, Math.floor(Number(offset)) || 0));
+  const group: WeekBy = by === 'sport' ? 'sport' : 'analyst';
+  const starts: WeekStart = ctx.weekStart === 'sunday' ? 'sunday' : 'monday';
+  const week = weekWindow(now, ctx.tz, off, starts);
+  const slips = ctx.db.prepare(`SELECT id, user_id, user_name, status, stake, profit, is_demo, tier FROM slips
+    WHERE status IN ('won','lost','push','void') AND profit IS NOT NULL AND is_test = 0 AND settled_at >= ? AND settled_at < ?`).all(week.start, week.end) as any[];
+  const vis = slips.filter((s) => seen(ctx, s, viewer));
+  const sports = new Map<string, string[]>();
+  if (vis.length && group === 'sport') {
+    const legs = ctx.db.prepare(`SELECT slip_id, league FROM legs WHERE slip_id IN (${vis.map(() => '?').join(',')})`).all(...vis.map((s) => s.id)) as { slip_id: string; league: string }[];
+    for (const l of legs) {
+      const arr = sports.get(l.slip_id) ?? [];
+      if (l.league && !arr.includes(l.league)) arr.push(l.league);
+      sports.set(l.slip_id, arr);
+    }
+  }
+  const rows = summarizeWeek(vis.map((s) => ({
+    key: s.user_id, label: s.user_name, status: s.status, stake: s.stake, profit: s.profit, sports: sports.get(s.id) ?? [], demo: !!s.is_demo,
+  })), group);
+  const weeks = Array.from({ length: 8 }, (_, i) => {
+    const w = weekWindow(now, ctx.tz, i, starts);
+    const label = i === 0 ? `This week · ${w.label}` : i === 1 ? `Last week · ${w.label}` : w.label;
+    return { offset: i, label, start: w.start, end: w.end };
+  });
+  return { asOf: Date.now(), by: group, week, weeks, rows };
 }
 
 // ---------- News & health ----------
-export async function newsView(ctx: Ctx) {
-  const rows = loadSlips(ctx, `status = 'open'`).filter((r) => isPublic(r.slip));
+export async function newsView(ctx: Ctx, viewer?: Viewer | null) {
+  const rows = loadSlips(ctx, `status = 'open'`).filter((r) => isPublic(r.slip) && seen(ctx, r.slip, viewer));
   const players = new Map<string, { league: string; name: string; athleteId: string | null; team: string | null; slips: string[] }>();
   const teams = new Map<string, { league: string; team: string; slips: string[] }>();
   for (const { slip, legs } of rows) for (const l of legs) {

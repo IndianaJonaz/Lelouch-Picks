@@ -3,8 +3,12 @@ import { EventEmitter } from 'node:events';
 import type { DatabaseSync } from 'node:sqlite';
 import { getLegs, getSlip, type Leg, type Slip } from './db.ts';
 import { gameFromSummary, type Espn, type Game } from './espn.ts';
-import { gradeLeg, settleSlip } from './grading.ts';
+import { settleForBook } from './books.ts';
+import { gradeLeg } from './grading.ts';
+import { applyScoreboardGrade } from './scoregrade.ts';
+import { backfillSettleBy } from './settleby.ts';
 import { parseBox, type Box } from './stats.ts';
+import { addDays } from './util.ts';
 
 export interface EventSnap { league: string; game: Game; box: Box; at: number; stale: boolean; error: string | null }
 export interface SettledEvent { slip: Slip; legs: Leg[] }
@@ -28,6 +32,7 @@ export class Engine extends EventEmitter {
 
   async tick(): Promise<{ changedSlips: string[] }> {
     const t0 = Date.now();
+    backfillSettleBy(this.db);
     const events = this.trackedEvents();
     const changedSlips = new Set<string>();
     let error: string | null = null;
@@ -40,7 +45,9 @@ export class Engine extends EventEmitter {
         if (prev) prev.error = `feed error: ${error}`;
       }
     }));
+    for (const id of await this.gradePendingFromScoreboard()) changedSlips.add(id);
     for (const id of changedSlips) this.settle(id);
+    await this.finalPassOverdue();
     this.lastTick = { at: Date.now(), ms: Date.now() - t0, events: events.length, error };
     this.emit('tick', { changed: [...changedSlips] });
     return { changedSlips: [...changedSlips] };
@@ -66,17 +73,66 @@ export class Engine extends EventEmitter {
     return [...changed];
   }
 
+  /**
+   * Final scoreboard pass for spread / total / moneyline legs the box score didn't grade.
+   * A leg with no confident final game is left pending. Props are not touched.
+   */
+  async gradePendingFromScoreboard(): Promise<string[]> {
+    const legs = this.db.prepare(`SELECT * FROM legs WHERE status = 'pending' AND type IN ('spread','total','ml')`).all() as unknown as Leg[];
+    if (!legs.length) return [];
+    const dates = new Map<string, Set<string>>();
+    for (const leg of legs) {
+      const set = dates.get(leg.league) ?? new Set<string>();
+      const ymd = leg.start_time ? leg.start_time.slice(0, 10) : new Date().toISOString().slice(0, 10);
+      set.add(ymd);
+      if (leg.start_time) set.add(addDays(ymd, -1));
+      dates.set(leg.league, set);
+    }
+    const games = new Map<string, Game[]>();
+    await Promise.all([...dates.entries()].map(async ([league, days]) => {
+      const list: Game[] = [];
+      for (const day of days) {
+        try {
+          const r = await this.espn.scoreboard(league, day);
+          list.push(...r.games);
+        } catch { /* feed down — the leg stays pending */ }
+      }
+      games.set(league, list);
+    }));
+    const changed = new Set<string>();
+    for (const leg of legs) {
+      const g = applyScoreboardGrade(leg, games.get(leg.league) ?? []);
+      if (g.status === 'pending') continue;
+      const res = this.db.prepare(`UPDATE legs SET status = ?, actual = ?, detail = ?, graded_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ? AND status = 'pending'`)
+        .run(g.status, g.actual, g.detail, leg.id);
+      if (res.changes) changed.add(leg.slip_id);
+    }
+    return [...changed];
+  }
+
   /** Grade one slip's legs right now from ESPN box scores (does not settle the slip). Feed errors leave legs pending. */
   async gradeSlipLegs(slipId: string): Promise<void> {
     const events = this.db.prepare(`SELECT DISTINCT league, event_id FROM legs WHERE slip_id = ? AND event_id IS NOT NULL AND status = 'pending'`).all(slipId) as { league: string; event_id: string }[];
     await Promise.all(events.map((e) => this.gradeEvent(e.league, e.event_id).catch(() => [])));
   }
 
+  /** One more grade after settle_by. Legs that still can't be resolved stay pending — the slip is then overdue, not guessed. */
+  async finalPassOverdue() {
+    const now = new Date().toISOString();
+    const rows = this.db.prepare(`SELECT id FROM slips WHERE status = 'open' AND settle_by IS NOT NULL AND settle_by < ?`).all(now) as { id: string }[];
+    for (const { id } of rows) {
+      await this.gradeSlipLegs(id).catch(() => {});
+      const pending = this.db.prepare(`SELECT DISTINCT league, event_id FROM legs WHERE slip_id = ? AND status = 'pending' AND event_id IS NOT NULL AND type IN ('spread','total','ml')`).all(id) as { league: string; event_id: string }[];
+      for (const e of pending) await this.gradeEvent(e.league, e.event_id).catch(() => []);
+      this.settle(id);
+    }
+  }
+
   settle(slipId: string) {
     const slip = getSlip(this.db, slipId);
     if (!slip || (slip.status !== 'open' && slip.status !== 'review')) return;
     const legs = getLegs(this.db, slipId);
-    const s = settleSlip(slip, legs);
+    const s = settleForBook(slip, legs);
     if (s.status === slip.status && s.profit === slip.profit) return;
     const settled = s.status !== 'open';
     // Hidden slips are revealed once they settle, so the record stays honest.

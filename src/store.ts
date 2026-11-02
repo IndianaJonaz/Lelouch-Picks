@@ -1,6 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite';
 import { getLegs, getSlip, type Leg, type Slip, type SlipStatus } from './db.ts';
 import type { ResolvedLeg } from './resolve.ts';
+import { config } from './config.ts';
+import { computeSettleBy } from './settleby.ts';
+import { canonicalTier, parseLadder } from './tiers.ts';
 import { shortId } from './util.ts';
 
 export class SlipError extends Error {}
@@ -11,6 +14,8 @@ export interface NewSlip {
   /** Imports with a known result don't need odds to compute profit. */
   oddsOptional?: boolean;
   book?: string | null; play_type?: string | null; odds_text?: string | null; payout?: number | null; is_test?: boolean; source_url?: string | null;
+  /** Visibility tier id. Omitted → free (public), which is what every existing pick is. */
+  tier?: string | null;
 }
 
 export function validateOdds(o: number | null | undefined) {
@@ -32,12 +37,15 @@ export function createSlip(db: DatabaseSync, s: NewSlip, legs: ResolvedLeg[]): S
   if (slipOdds == null && legs.some((l) => l.odds == null) && !s.oddsOptional) {
     throw new SlipError('Odds are needed to track profit: give the slip odds (odds: +450) or put odds on every leg, e.g. "GB -3.5 (-110)".');
   }
+  const tier = canonicalTier(s.tier, parseLadder(config.tierLadder));
+  if (tier == null) throw new SlipError(`Unknown tier "${s.tier}". Use free, moneyline, vip, deluxe, or lifetime.`);
   const id = shortId(5);
   db.exec('BEGIN');
   try {
-    db.prepare(`INSERT INTO slips (id,user_id,user_name,title,stake,odds,hidden,note,source,is_demo,guild_id,channel_id,message_id,book,play_type,odds_text,payout,is_test,source_url) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+    const settleBy = computeSettleBy(legs, s.book);
+    db.prepare(`INSERT INTO slips (id,user_id,user_name,title,stake,odds,hidden,note,source,is_demo,guild_id,channel_id,message_id,book,play_type,odds_text,payout,is_test,source_url,tier,settle_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
       .run(id, s.user_id, s.user_name, s.title ?? null, s.stake, slipOdds, s.hidden ? 1 : 0, s.note ?? null, s.source ?? 'discord', s.is_demo ? 1 : 0, s.guild_id ?? null, s.channel_id ?? null, s.message_id ?? null,
-        s.book ?? null, s.play_type ?? null, s.odds_text ?? null, s.payout ?? null, s.is_test ? 1 : 0, s.source_url ?? null);
+        s.book ?? null, s.play_type ?? null, s.odds_text ?? null, s.payout ?? null, s.is_test ? 1 : 0, s.source_url ?? null, tier, settleBy);
     const ins = db.prepare(`INSERT INTO legs (slip_id,idx,league,event_id,event_name,start_time,type,team,player,athlete_id,stat,side,line,odds,raw) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
     legs.forEach((l, i) => ins.run(id, i, l.league, l.event_id, l.event_name, l.start_time, l.type, l.team, l.player, l.athlete_id, l.stat, l.side, l.line, l.odds, l.raw));
     db.exec('COMMIT');

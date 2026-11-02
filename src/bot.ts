@@ -15,6 +15,9 @@ import { ratePasted, rateSlip, ratingDescription, type ParlayRating } from './ra
 import type { Resolver, ResolvedLeg } from './resolve.ts';
 import { createSlip, deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
 import { addDays, dayInTz, fmtOdds } from './util.ts';
+import { config } from './config.ts';
+import { claimGradePost, ensureFeedCursor, layupChannelId, listUnposted, releaseGradePost } from './layup.ts';
+import { canSeePick, parseLadder, parseStaff, viewerFromRoles, type TierDef, type Viewer } from './tiers.ts';
 import { boardView, leaderboard, legText, liveView, slipView, type Ctx } from './views.ts';
 
 const BRAND = 0xc8102e; // Geass theme: Britannia crimson
@@ -31,7 +34,10 @@ export const commands = [
     .addIntegerOption((o) => o.setName('odds').setDescription('American odds for the whole slip, e.g. 450 or -110'))
     .addBooleanOption((o) => o.setName('hidden').setDescription('Keep the legs hidden until you /reveal (or it settles)'))
     .addStringOption((o) => o.setName('title').setDescription('Optional name, e.g. "TNF sweat"').setMaxLength(60))
-    .addStringOption((o) => o.setName('note').setDescription('Optional write-up / reasoning').setMaxLength(500)),
+    .addStringOption((o) => o.setName('note').setDescription('Optional write-up / reasoning').setMaxLength(500))
+    .addStringOption((o) => o.setName('tier').setDescription('Who can see this pick (default Free Member)').addChoices(
+      ...parseLadder(config.tierLadder).slice(0, 25).map((t) => ({ name: t.label, value: t.id })),
+    )),
   new SlashCommandBuilder().setName('rate').setDescription('Rate a parlay 1-10. Same syntax as /pick; nothing is saved.')
     .addStringOption((o) => o.setName('legs').setDescription('Same leg syntax as /pick, separated with ; or newlines').setRequired(true)),
   new SlashCommandBuilder().setName('slips').setDescription('Open slips')
@@ -99,6 +105,11 @@ export interface BotDeps {
   slipChannelIds?: string[];
   /** Staff channels: screenshots there become test slips, kept out of standings. */
   staffChannelIds?: string[];
+  /** Tier ladder and staff role names. Defaults match Free < Moneyline < VIP < Deluxe < Lifetime. */
+  ladder?: TierDef[];
+  staffRoles?: string[];
+  /** LAYUP_FEED_CHANNEL_ID. Blank = look up a channel named layup-feed. */
+  layupChannelId?: string;
 }
 
 /** A slip screenshot still on Discord. The url is a short-lived signed CDN link: fetch it, never log or store it. */
@@ -186,6 +197,8 @@ export class Bot {
   status: { status: string; detail: string | null; tag: string | null } = { status: 'idle', detail: 'DISCORD_BOT_TOKEN not set — bot disabled, web app running', tag: null };
   private client: Client | null = null;
   private announcing = false;
+  private layupBusy = false;
+  private layupId: string | null = null;
   private d: BotDeps;
   constructor(d: BotDeps) { this.d = d; }
 
@@ -203,6 +216,7 @@ export class Bot {
       } catch (e) { console.error('[bot] command registration failed', e); this.status.detail += ' · command registration failed: ' + (e as Error).message; }
       try { await applyGuildNicknames(c.guilds.cache.values(), this.d.nickname); }
       catch (e) { console.warn(`[bot] nickname step failed: ${(e as Error).message}`); }
+      this.flushLayup();
     });
     client.on(Events.InteractionCreate, (i) => this.onInteraction(i).catch((e) => console.error('[bot] interaction error', e)));
     if (this.d.vision) {
@@ -212,7 +226,11 @@ export class Bot {
     client.on(Events.ShardDisconnect, () => { this.status = { ...this.status, status: 'down', detail: 'disconnected from gateway, reconnecting' }; });
     client.on(Events.ShardResume, () => { this.status = { ...this.status, status: 'ok', detail: `connected as ${this.status.tag}` }; });
     client.on(Events.Error, (e) => { this.status = { ...this.status, status: 'down', detail: e.message }; });
-    if (!this.announcing) { this.announcing = true; this.d.engine.on('settled', (e: SettledEvent) => this.announce(e).catch(() => {})); }
+    if (!this.announcing) {
+      this.announcing = true;
+      this.d.engine.on('settled', (e: SettledEvent) => { this.announce(e).catch(() => {}); this.flushLayup(); });
+      this.d.engine.on('tick', () => this.flushLayup());
+    }
     try { await client.login(this.d.token); }
     catch (e) {
       // Message Content is a privileged intent: if it isn't enabled in the Developer Portal, keep the bot up without screenshots.
@@ -253,8 +271,13 @@ export class Bot {
         case 'live': return await this.cmdLive(i);
         case 'board': return await this.cmdBoard(i);
         case 'leaderboard': return await this.cmdLeaderboard(i);
-        case 'dashboard': return await i.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(BRAND).setTitle(`${this.d.groupName} dashboard`).setURL(this.d.publicUrl)
-          .setDescription(`**Link:** ${this.d.publicUrl}\n**Today’s key:** \`${this.d.auth.keyFor()}\`\n\nKeys rotate daily at midnight (${this.d.ctx.tz}). Tick *Keep me signed in* to stay in for 30 days. On iPhone: Share → Add to Home Screen.`)] });
+        case 'dashboard': {
+          const v = this.viewer(i);
+          const token = this.d.auth.signViewer({ userId: i.user.id, name: (i.member as any)?.displayName ?? i.user.username, tier: v.tier, staff: v.staff });
+          const link = `${this.d.publicUrl}/board?v=${encodeURIComponent(token)}`;
+          return await i.reply({ ephemeral: true, embeds: [new EmbedBuilder().setColor(BRAND).setTitle(`${this.d.groupName} dashboard`).setURL(this.d.publicUrl)
+            .setDescription(`**Link:** ${link}\n**Today’s key:** \`${this.d.auth.keyFor()}\`\n\nOpen that link so the board matches your tier (${v.staff ? 'staff' : v.tier}). Keys rotate daily at midnight (${this.d.ctx.tz}). Tick *Keep me signed in* to stay in for 30 days. On iPhone: Share → Add to Home Screen.`)] });
+        }
         case 'reveal': { const s = revealSlip(this.d.ctx.db, i.options.getString('id', true), i.user.id, this.isAdmin(i)); this.d.engine.emit('tick', { changed: [s.id] }); return await i.reply({ embeds: [this.slipEmbed(s, getLegs(this.d.ctx.db, s.id), '🔓 Revealed')] }); }
         case 'delete': deleteSlip(this.d.ctx.db, i.options.getString('id', true), i.user.id, this.isAdmin(i)); this.d.engine.emit('tick', { changed: [] }); return await i.reply({ ephemeral: true, content: 'Slip deleted.' });
         case 'poster': if (!this.isAdmin(i)) throw new SlipError('Admins only.'); setPoster(this.d.ctx.db, i.options.getString('id', true), dayInTz(new Date(), this.d.ctx.tz)); this.d.engine.emit('tick', { changed: [] }); return await i.reply({ content: `📌 Slip \`${i.options.getString('id', true).toUpperCase()}\` is tonight’s poster.` });
@@ -268,9 +291,21 @@ export class Bot {
     }
   }
 
+  private ladder() { return this.d.ladder?.length ? this.d.ladder : parseLadder(config.tierLadder); }
+  private staffNames() { return this.d.staffRoles?.length ? this.d.staffRoles : parseStaff(config.staffRoleNames); }
+  private roleNames(i: ChatInputCommandInteraction | ButtonInteraction): string[] {
+    const roles = (i.member as any)?.roles;
+    if (roles?.cache?.values) return [...roles.cache.values()].map((r: any) => r?.name).filter(Boolean);
+    return [];
+  }
+  private viewer(i: ChatInputCommandInteraction | ButtonInteraction): Viewer {
+    const vis = viewerFromRoles(this.roleNames(i), this.ladder(), this.staffNames());
+    return { userId: i.user.id, tier: vis.tier, staff: vis.staff };
+  }
+
   private async cmdPick(i: ChatInputCommandInteraction) {
     const legs = i.options.getString('legs');
-    const opts = { stake: i.options.getNumber('stake') ?? 1, odds: i.options.getInteger('odds'), hidden: !!i.options.getBoolean('hidden'), title: i.options.getString('title'), note: i.options.getString('note') };
+    const opts = { stake: i.options.getNumber('stake') ?? 1, odds: i.options.getInteger('odds'), hidden: !!i.options.getBoolean('hidden'), title: i.options.getString('title'), note: i.options.getString('note'), tier: i.options.getString('tier') };
     if (!legs) {
       return i.showModal(pickModal(opts));
     }
@@ -285,7 +320,7 @@ export class Bot {
     try {
       await this.finishPick(i, i.fields.getTextInputValue('legs'), {
         stake: Number(i.fields.getTextInputValue('stake') || 1), odds: oddsRaw ? Number(oddsRaw.replace(/^\+/, '')) : null, hidden,
-        title: i.fields.getTextInputValue('title') || null, note: i.fields.getTextInputValue('note') || null,
+        title: i.fields.getTextInputValue('title') || null, note: i.fields.getTextInputValue('note') || null, tier: null,
       });
     } catch (e) { await i.editReply({ content: `⚠️ ${(e as Error).message}` }); }
   }
@@ -339,13 +374,13 @@ export class Bot {
     await this.replyRating(i, () => rateSlip(this.d.ctx.espn, s.legs, this.d.vision));
   }
 
-  private async finishPick(i: ChatInputCommandInteraction | ModalSubmitInteraction, text: string, o: { stake: number; odds: number | null; hidden: boolean; title: string | null; note: string | null }) {
+  private async finishPick(i: ChatInputCommandInteraction | ModalSubmitInteraction, text: string, o: { stake: number; odds: number | null; hidden: boolean; title: string | null; note: string | null; tier?: string | null }) {
     const parts = splitLegs(text);
     const resolved: ResolvedLeg[] = [];
     const errors: string[] = [];
     for (const p of parts) { try { resolved.push(await this.d.resolver.resolve(p, { tz: this.d.ctx.tz, leagues: this.d.ctx.leagues })); } catch (e) { errors.push(`• ${(e as Error).message}`); } }
     if (errors.length) throw new ParseError(`Nothing saved — fix these leg(s):\n${errors.join('\n')}`);
-    const slip = createSlip(this.d.ctx.db, { user_id: i.user.id, user_name: (i.member as any)?.displayName ?? i.user.globalName ?? i.user.username, ...o, source: 'discord', guild_id: i.guildId, channel_id: i.channelId }, resolved);
+    const slip = createSlip(this.d.ctx.db, { user_id: i.user.id, user_name: (i.member as any)?.displayName ?? i.user.globalName ?? i.user.username, ...o, tier: o.tier ?? null, source: 'discord', guild_id: i.guildId, channel_id: i.channelId }, resolved);
     this.d.engine.poke();
     this.d.engine.emit('tick', { changed: [slip.id] });
     const legs = getLegs(this.d.ctx.db, slip.id);
@@ -496,7 +531,7 @@ export class Bot {
 
   private async cmdSlips(i: ChatInputCommandInteraction) {
     const u = i.options.getUser('user');
-    const b = boardView(this.d.ctx, 'all');
+    const b = boardView(this.d.ctx, 'all', this.viewer(i));
     const open = b.open.filter((s) => !u || s.userId === u.id).slice(0, 15);
     const lines = open.map((s) => s.hidden ? `🔒 **${s.user}** · \`${s.id}\` · ${s.legCount} hidden leg(s) · ${units(s.stake)}`
       : `🟣 **${s.user}** · \`${s.id}\` · ${s.legs.map((l) => `${ICON[l.status]}${l.text}`).join(', ')} · ${units(s.stake)} → ${units(s.toWin)}`);
@@ -505,13 +540,13 @@ export class Bot {
 
   private async cmdSlip(i: ChatInputCommandInteraction) {
     const s = slipWithLegs(this.d.ctx.db, i.options.getString('id', true));
-    if (!s) throw new SlipError('No slip with that id.');
+    if (!s || !canSeePick(s.slip, this.viewer(i), this.ladder())) throw new SlipError('No slip with that id.');
     await i.reply({ embeds: [this.slipEmbed(s.slip, s.legs, undefined, s.slip.user_id === i.user.id)], ephemeral: !isPublic(s.slip) });
   }
 
   private async cmdLive(i: ChatInputCommandInteraction) {
     await i.deferReply();
-    const v = await liveView(this.d.ctx, false);
+    const v = await liveView(this.d.ctx, false, this.viewer(i));
     const games = v.games.filter((g: any) => g.state === 'in' || g.state === 'pre').slice(0, 10);
     const e = new EmbedBuilder().setColor(BRAND).setTitle('Live').setURL(this.d.publicUrl + '/live');
     if (!games.length) e.setDescription('No live or upcoming games with public legs.' + (v.hiddenLegs ? ` (${v.hiddenLegs} hidden leg(s) in play)` : ''));
@@ -529,7 +564,7 @@ export class Bot {
   }
 
   private async cmdBoard(i: ChatInputCommandInteraction) {
-    const b = boardView(this.d.ctx, 'all');
+    const b = boardView(this.d.ctx, 'all', this.viewer(i));
     const e = new EmbedBuilder().setColor(BRAND).setTitle(`${this.d.groupName} · The Board`).setURL(this.d.publicUrl + '/board');
     if (b.poster) e.addFields({ name: `📌 Tonight’s poster${b.poster.pinned ? '' : ' (auto)'} — ${b.poster.user}`, value: b.poster.legs.map((l: any) => `${ICON[l.status]} ${l.text}`).join('\n').slice(0, 1000) + `\n${units(b.poster.stake)} @ ${b.poster.oddsText} → ${units(b.poster.toWin)}` });
     e.addFields({ name: `Open slips (${b.open.length})`, value: b.open.slice(0, 6).map((s) => s.hidden ? `🔒 ${s.user} · ${s.legCount} legs` : `🟣 ${s.user} · ${s.legCount} legs · ${units(s.stake)} @ ${s.oddsText}`).join('\n') || '—' });
@@ -540,7 +575,7 @@ export class Bot {
 
   private async cmdLeaderboard(i: ChatInputCommandInteraction) {
     const period = i.options.getString('period') ?? 'all';
-    const lb = leaderboard(this.d.ctx, period);
+    const lb = leaderboard(this.d.ctx, period, this.viewer(i));
     const medal = ['🥇', '🥈', '🥉'];
     const lines = lb.slice(0, 20).map((u) => `${medal[u.rank - 1] ?? `**${u.rank}.**`} ${u.user} · **${units(u.profit)}** · ${u.w}-${u.l}-${u.p} · ROI ${u.roi}%${u.streak ? ' · ' + u.streak : ''}`);
     await i.reply({ embeds: [new EmbedBuilder().setColor(BRAND).setTitle(`Leaderboard · ${({ all: 'All time', '30d': 'Last 30 days', '7d': 'Last 7 days', today: 'Today' } as any)[period]}`).setDescription(lines.join('\n') || 'No settled slips yet.').setFooter({ text: 'Ranked by profit in dollars, not volume' }).setURL(this.d.publicUrl + '/board')] });
@@ -552,6 +587,52 @@ export class Bot {
     if (!ch || !('send' in ch)) return;
     const head = e.slip.status === 'won' ? '💰 Cashed' : e.slip.status === 'lost' ? '💀 Lost' : '➖ Settled';
     await (ch as any).send({ embeds: [this.slipEmbed(e.slip, getLegs(this.d.ctx.db, e.slip.id), head)] });
+  }
+
+  private async resolveLayup(): Promise<string | null> {
+    if (this.layupId) return this.layupId;
+    const env = (this.d.layupChannelId ?? '').trim();
+    if (/^\d{5,25}$/.test(env)) {
+      const ch = await this.client!.channels.fetch(env).catch(() => null);
+      if (ch && 'send' in (ch as object)) { this.layupId = env; return env; }
+    }
+    try {
+      if (!this.d.guildId) return null;
+      const guild = await this.client!.guilds.fetch(this.d.guildId);
+      const channels = await guild.channels.fetch();
+      const id = layupChannelId([...channels.values()].filter((c) => !!c).map((c) => ({ id: c!.id, name: c!.name ?? '' })), null);
+      if (id) this.layupId = id;
+      return id;
+    } catch { return null; }
+  }
+
+  /** Post each newly graded slip to layup-feed once. A restart will not post it again. */
+  private async flushLayup() {
+    if (this.layupBusy || !this.client?.isReady()) return;
+    this.layupBusy = true;
+    try {
+      const since = ensureFeedCursor(this.d.ctx.db);
+      const ids = listUnposted(this.d.ctx.db, since);
+      if (!ids.length) return;
+      const channelId = await this.resolveLayup();
+      if (!channelId) return;
+      const ch = await this.client.channels.fetch(channelId).catch(() => null);
+      if (!ch || !('send' in ch)) return;
+      for (const id of ids) {
+        const full = slipWithLegs(this.d.ctx.db, id);
+        if (!full || !['won', 'lost', 'push'].includes(full.slip.status)) continue;
+        if (!claimGradePost(this.d.ctx.db, id, full.slip.status)) continue;
+        const book = full.slip.book ? `${full.slip.book} · ` : '';
+        const head = full.slip.status === 'won' ? '💰 Cashed' : full.slip.status === 'lost' ? '💀 Lost' : '➖ Push';
+        const flex = /flex/i.test(full.slip.play_type ?? '');
+        const hits = full.legs.filter((l) => l.status === 'won').length;
+        const denom = full.legs.filter((l) => l.status !== 'void').length || full.legs.length;
+        const extra = flex ? ` · ${hits}/${denom} hits` : '';
+        try { await (ch as any).send({ embeds: [this.slipEmbed(full.slip, full.legs, `${book}${head}${extra}`)] }); }
+        catch { releaseGradePost(this.d.ctx.db, id); break; }
+      }
+    } catch (e) { console.error('[bot] layup feed', (e as Error).message); }
+    finally { this.layupBusy = false; }
   }
 }
 
