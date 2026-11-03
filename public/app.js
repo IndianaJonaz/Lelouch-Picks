@@ -237,10 +237,33 @@ function paceHtml(leg) {
   return `<div class="pace"><div class="bar ${state}"><i style="width:${(p.pct * 100).toFixed(1)}%"></i>${projPct != null && !done ? `<u style="left:calc(${projPct.toFixed(1)}% - 1px)" title="projected"></u>` : ''}</div>
     <span class="v">${esc(p.label)}${proj}${!done && p.onPace != null ? (p.onPace ? ' · on pace' : ' · behind') : ''}</span></div>`;
 }
+// PrizePicks-style progress bar on over/under legs: current stat vs the line, with the number in a pill at the fill's end.
+// Value comes from the server (ESPN box score via pace.current, else the graded leg.actual). No value yet = bar at 0.
+function isOU(l) {
+  if ((l.type !== 'prop' && l.type !== 'total') || l.line == null || (l.side !== 'over' && l.side !== 'under')) return false;
+  return !(l.type === 'prop' && l.line === 0.5 && l.side === 'over' && ['td', 'goals', 'hr'].includes(l.stat));
+}
+function ouBar(l) {
+  if (!isOU(l)) return '';
+  const c = typeof l.pace?.current === 'number' ? l.pace.current : typeof l.actual === 'number' ? l.actual : null;
+  const v = c ?? 0, line = Number(l.line);
+  const p = line > 0 ? Math.max(0, Math.min(1, v / line)) : v > 0 ? 1 : 0;
+  const tone = l.status === 'won' ? 'on' : l.status === 'lost' ? 'off' : l.status !== 'pending' || c == null ? ''
+    : v > line ? (l.side === 'over' ? 'on' : 'off') : l.pace?.onPace === true ? 'on' : l.pace?.onPace === false ? 'off' : '';
+  return `<div class="ppb ${tone}" style="--p:${p.toFixed(4)}" title="${c == null ? 'No live stat yet' : esc(`${v} of ${line}`)}"><div class="ppb-t"><i></i></div><b class="ppb-n">${esc(String(v))}</b></div>`;
+}
+// Pace text without the old bar, for legs that show the progress bar instead.
+function paceNote(leg) {
+  const p = leg.pace;
+  if (!p || leg.event?.state === 'pre' || p.label === 'Not started' || !p.label) return '';
+  const done = leg.status !== 'pending';
+  const proj = !done && p.projected != null ? ` · proj ${p.projected}` : '';
+  return `<div class="pace"><span class="v">${esc(p.label)}${proj}${!done && p.onPace != null ? (p.onPace ? ' · on pace' : ' · behind') : ''}</span></div>`;
+}
 function legRow(x) {
   const l = x.leg;
   return `<div class="leg">${av(x.user)}<div><div class="t">${ouText(l)} ${l.oddsText ? `<span class="dim num" style="font-weight:500">${esc(l.oddsText)}</span>` : ''}</div>
-    <div class="s">${esc(x.user)} · slip ${esc(x.slipId)}${l.detail ? ' · ' + esc(l.detail) : ''}${x.demo ? ' · <span class="chip demo">DEMO</span>' : ''}</div>${paceHtml(l)}</div>
+    <div class="s">${esc(x.user)} · slip ${esc(x.slipId)}${l.detail ? ' · ' + esc(l.detail) : ''}${x.demo ? ' · <span class="chip demo">DEMO</span>' : ''}</div>${isOU(l) ? ouBar(l) + paceNote(l) : paceHtml(l)}</div>
     <span class="chip ${l.status}">${l.status === 'pending' ? (l.event?.state === 'in' ? 'LIVE' : 'OPEN') : l.status.toUpperCase()}</span></div>`;
 }
 function gameCard(g, legsHtml) {
@@ -311,7 +334,7 @@ function ouText(l) {
   return `${esc(t.slice(0, m.index) + m[1] + m[2] + t.slice(m.index + m[0].length))} <span class="ou-${w}">${w}</span>`;
 }
 function miniLegs(s, open) {
-  return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${legMark(l, open)}<div class="x">${ouText(l)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small></div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
+  return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${legMark(l, open)}<div class="x">${ouText(l)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small>${ouBar(l)}</div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
 }
 function slipCard(s) {
   const hd = `<div class="slip-hd">${av(s.user)}<div><div class="who">${esc(s.user)} ${s.demo ? '<span class="chip demo">DEMO</span>' : ''}</div><div class="sid"><a data-nav href="/slip/${esc(s.id)}">${esc(s.title || `${s.legCount}-leg slip`)} · ${esc(s.id)}</a></div></div><span class="spacer"></span>
@@ -413,7 +436,7 @@ function viewBoard() {
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty"><b>No settled slips in this window</b>Rankings appear once slips grade.</div>`}</div></section>`;
   html += viewWeekly(S.data.weekly);
-  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res${s.hasImage ? ' has-img' : ''}"${s.hasImage ? ` data-img="${esc(s.id)}" role="button" tabindex="0" aria-label="View slip screenshot ${esc(s.id)}"` : ''}>${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${s.legs.map((l) => l.text).join(' · ') ? s.legs.map(ouText).join(' · ') : esc(s.title || '')}</div></div>${s.hasImage ? `<span class="img-ic" title="View slip screenshot">${svg.img}</span>` : ''}<span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
+  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res${s.hasImage ? ' has-img' : ''}"${s.hasImage ? ` data-img="${esc(s.id)}" role="button" tabindex="0" aria-label="View slip screenshot ${esc(s.id)}"` : ''}>${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${s.legs.map((l) => l.text).join(' · ') ? s.legs.map(ouText).join(' · ') : esc(s.title || '')}</div>${s.legs.some(isOU) ? `<div class="ppb-list">${s.legs.filter(isOU).map((l) => `<div class="ppb-row"><span class="ppb-lbl">${esc(l.player || l.event?.name || '')}${l.statLabel ? ' · ' + esc(l.statLabel) : l.type === 'total' ? ' · Total' : ''}</span>${ouBar(l)}</div>`).join('')}</div>` : ''}</div>${s.hasImage ? `<span class="img-ic" title="View slip screenshot">${svg.img}</span>` : ''}<span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
   return html;
 }
 
@@ -503,7 +526,7 @@ const WORD_CLS = { waiting: 'pending', hit: 'won', miss: 'lost', push: 'push', v
 function ticketHtml(s) {
   const t = s.ticket, $ = !!s.book;
   const ring = t.legCount ? Math.round((t.hits / t.legCount) * 100) : 0;
-  const rows = s.legs.map((l) => `<div class="tk-row ${esc(l.status)}">${l.headshot ? `<img class="hs" src="${esc(l.headshot)}" alt="" loading="lazy">` : `<span class="hs ph">${esc(l.leagueLabel.slice(0, 3))}</span>`}<div class="x">${esc(l.ticketText)}${l.actual != null ? ` <b class="act">${esc(l.actual)}</b>` : ''}</div>${stIc(l.status)}</div>`).join('');
+  const rows = s.legs.map((l) => `<div class="tk-row ${esc(l.status)}">${l.headshot ? `<img class="hs" src="${esc(l.headshot)}" alt="" loading="lazy">` : `<span class="hs ph">${esc(l.leagueLabel.slice(0, 3))}</span>`}<div class="x">${esc(l.ticketText)}${l.actual != null ? ` <b class="act">${esc(l.actual)}</b>` : ''}${ouBar(l)}</div>${stIc(l.status)}</div>`).join('');
   return `<div class="ticket ${esc(s.status)}">
     <div class="tk-top">${t.book ? `<span class="tk-book">${esc(t.book.toUpperCase())}</span>` : ''}${t.playBadge ? `<span class="tk-play">${esc(t.playBadge)}</span>` : ''}${t.isTest ? '<span class="tk-play">TEST</span>' : ''}<span class="spacer"></span><span class="tk-id">#${esc(s.id)}</span></div>
     <div class="tk-mid"><div><div class="tk-big">${money(t.risk, $)} → ${money(t.pays, $)}</div><div class="tk-sub">${esc(t.sports.join(' / '))} · ${t.legCount} leg${t.legCount === 1 ? '' : 's'}${t.oddsAsLogged ? ' · ' + esc(t.oddsAsLogged) : ''}</div>
@@ -527,7 +550,7 @@ function viewSlip() {
     <div class="card stat"><div class="k">Pays</div><div class="v num">${money(t.pays, $)}</div></div>
     <div class="card stat"><div class="k">Net</div><div class="v num ${cls(t.net)}">${t.net == null ? '—' : signed(t.net, $)}</div></div></div>`;
   const legs = `<section class="sec"><div class="sec-head"><h2>Legs</h2><span class="count">${s.legCount}</span></div><div class="card">${t.playType ? `<div class="dim" style="padding:10px 14px 0">${esc(t.playType)}</div>` : ''}
-    ${s.legs.map((l) => `<div class="sp-leg">${stIc(l.status)}<div class="x">${esc(l.ticketText)}${l.detail ? `<small>${esc(l.detail)}</small>` : ''}</div><span class="w ${WORD_CLS[l.statusWord] || ''}">${esc(l.statusWord)}${l.actual != null ? ` · ${esc(l.actual)}` : ''}</span></div>`).join('')}</div></section>`;
+    ${s.legs.map((l) => `<div class="sp-leg">${stIc(l.status)}<div class="x">${esc(l.ticketText)}${l.detail ? `<small>${esc(l.detail)}</small>` : ''}${ouBar(l)}</div><span class="w ${WORD_CLS[l.statusWord] || ''}">${esc(l.statusWord)}${l.actual != null ? ` · ${esc(l.actual)}` : ''}</span></div>`).join('')}</div></section>`;
   const src = s.book ? `<p class="dim" style="font-size:12px">The original screenshot isn’t stored here; it stays in the Discord message the ticket replies to.</p>` : '';
   return back + head + tiles + `<section class="sec">${ticketHtml(s)}</section>` + legs + src + (s.note ? `<div class="card note" style="padding:12px 14px">“${esc(s.note)}”</div>` : '');
 }
