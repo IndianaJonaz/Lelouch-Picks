@@ -239,7 +239,7 @@ function paceHtml(leg) {
 }
 function legRow(x) {
   const l = x.leg;
-  return `<div class="leg">${av(x.user)}<div><div class="t">${esc(l.text)} ${l.oddsText ? `<span class="dim num" style="font-weight:500">${esc(l.oddsText)}</span>` : ''}</div>
+  return `<div class="leg">${av(x.user)}<div><div class="t">${ouText(l)} ${l.oddsText ? `<span class="dim num" style="font-weight:500">${esc(l.oddsText)}</span>` : ''}</div>
     <div class="s">${esc(x.user)} · slip ${esc(x.slipId)}${l.detail ? ' · ' + esc(l.detail) : ''}${x.demo ? ' · <span class="chip demo">DEMO</span>' : ''}</div>${paceHtml(l)}</div>
     <span class="chip ${l.status}">${l.status === 'pending' ? (l.event?.state === 'in' ? 'LIVE' : 'OPEN') : l.status.toUpperCase()}</span></div>`;
 }
@@ -413,7 +413,7 @@ function viewBoard() {
       <td class="hm"><span class="form">${r.last.map((x) => `<i class="${x}"></i>`).join('')}</span> <span class="dim num" style="font-size:12px">${esc(r.streak)}</span></td></tr>`).join('')}
     </tbody></table>` : `<div class="empty"><b>No settled slips in this window</b>Rankings appear once slips grade.</div>`}</div></section>`;
   html += viewWeekly(S.data.weekly);
-  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res${s.hasImage ? ' has-img' : ''}"${s.hasImage ? ` data-img="${esc(s.id)}" role="button" tabindex="0" aria-label="View slip screenshot ${esc(s.id)}"` : ''}>${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${esc(s.legs.map((l) => l.text).join(' · ') || s.title || '')}</div></div>${s.hasImage ? `<span class="img-ic" title="View slip screenshot">${svg.img}</span>` : ''}<span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
+  html += `<section class="sec"><div class="sec-head"><h2>Recent results</h2><span class="count">last 7 days</span></div><div class="card">${d.recent.length ? d.recent.slice(0, S.allRecent ? 999 : 12).map((s) => `<div class="res${s.hasImage ? ' has-img' : ''}"${s.hasImage ? ` data-img="${esc(s.id)}" role="button" tabindex="0" aria-label="View slip screenshot ${esc(s.id)}"` : ''}>${stIc(s.status === 'open' ? 'pending' : s.status)}<div class="x"><b>${esc(s.user)}</b> ${s.demo ? '<span class="chip demo">DEMO</span>' : ''} <span class="dim" style="font-size:12px">· ${esc(s.id)}${s.wasHidden ? ' · was hidden' : ''}</span><div>${s.legs.map((l) => l.text).join(' · ') ? s.legs.map(ouText).join(' · ') : esc(s.title || '')}</div></div>${s.hasImage ? `<span class="img-ic" title="View slip screenshot">${svg.img}</span>` : ''}<span class="p num ${cls(s.profit)}">${u(s.profit)}</span></div>`).join('') + (d.recent.length > 12 && !S.allRecent ? `<button class="more" data-more>Show all ${d.recent.length} results</button>` : '') : '<div class="empty">Nothing settled this week yet.</div>'}</div></section>`;
   return html;
 }
 
