@@ -342,6 +342,7 @@ body.lbx-open{overflow:hidden}
 .leg-hit,.leg-miss,.leg-none{width:18px;flex:none;text-align:center;font-weight:900;font-size:15px;line-height:1.2}
 .leg-hit{color:#3ddc97}
 .leg-miss{color:#ff4d5e;opacity:.55}
+.ou-over{color:#3ddc97;font-weight:600}.ou-under{color:var(--loss);font-weight:600}
 .chip.overdue{background:rgba(245,158,11,.18);color:#fcd34d;border:1px solid rgba(245,158,11,.5)}
 .wk-weeks{display:flex;flex-wrap:wrap;gap:0;margin:0 0 12px}
 .inj-team{margin:0 0 12px;background:#141016;color:var(--tx);border:1px solid var(--line2);border-radius:10px;padding:8px 10px;font:inherit}

@@ -302,8 +302,16 @@ const fmtSettle = (iso) => {
   const abbr = new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' }).formatToParts(d).find((p) => p.type === 'timeZoneName')?.value ?? '';
   return `${clock} ${abbr}`.trim();
 };
+// Over/under as a word at the end of the leg line ("Brunson 27.5 Points under"), not a bare o/u letter before the number.
+function ouText(l) {
+  const w = l.side === 'over' || l.side === 'under' ? l.side : null;
+  const t = String(l.text ?? '');
+  const m = w && l.line != null ? new RegExp(`(^|\\s)${w[0]}(${String(l.line).replace('.', '\\.')})(?=\\s|$)`).exec(t) : null;
+  if (!m) return esc(t);
+  return `${esc(t.slice(0, m.index) + m[1] + m[2] + t.slice(m.index + m[0].length))} <span class="ou-${w}">${w}</span>`;
+}
 function miniLegs(s, open) {
-  return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${legMark(l, open)}<div class="x">${esc(l.text)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small></div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
+  return `<div class="mini-legs">${s.legs.map((l) => `<div class="mini-leg">${legMark(l, open)}<div class="x">${ouText(l)}<small>${esc(l.leagueLabel)} · ${esc(l.event?.name || '')}${l.event?.state === 'pre' && l.event?.start ? ' · ' + esc(fmtDay(l.event.start)) + ' ' + esc(fmtTime(l.event.start)) : l.event?.detail ? ' · ' + esc(l.event.detail) : ''}${l.actual != null && l.type === 'prop' ? ' · <b style="color:var(--tx)">' + esc(l.actual) + '</b>' : ''}${l.detail ? ' · ' + esc(l.detail) : ''}</small></div><span class="o">${esc(l.oddsText)}</span></div>`).join('')}</div>`;
 }
 function slipCard(s) {
   const hd = `<div class="slip-hd">${av(s.user)}<div><div class="who">${esc(s.user)} ${s.demo ? '<span class="chip demo">DEMO</span>' : ''}</div><div class="sid"><a data-nav href="/slip/${esc(s.id)}">${esc(s.title || `${s.legCount}-leg slip`)} · ${esc(s.id)}</a></div></div><span class="spacer"></span>
