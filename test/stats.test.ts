@@ -45,3 +45,12 @@ test('stat aliases are sport-aware', () => {
   assert.equal(findStat('nba', 'p+r+a')!.key, 'pra');
   assert.equal(findStat('nba', 'pass yds'), null);
 });
+
+test("PrizePicks 'Assts' spelling maps to assist stats (slip reader + typed picks)", async () => {
+  const { normStat } = await import('../src/slipvision.ts');
+  const cases: [string, string][] = [['Pts+Assts', 'pa'], ['Rebs+Assts', 'ra'], ['Assts', 'ast'], ['Assts.', 'ast'], ['Pts+Rebs+Assts', 'pra'], ['Pts+Rebs+Asts', 'pra'], ['Pts+Rebs', 'pr']];
+  for (const [label, key] of cases) {
+    assert.equal(findStat('nba', normStat(label))?.key, key, `slip label ${label}`);
+    assert.equal(findStat('nba', label)?.key, key, `typed ${label}`);
+  }
+});

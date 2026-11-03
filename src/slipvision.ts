@@ -276,7 +276,7 @@ const TEAM_ALIASES: Record<string, string> = { SAS: 'SA', GSW: 'GS', NYK: 'NY', 
 export function normStat(s: string): string {
   return s.toLowerCase().trim()
     .replace(/^3-?pt(?:s)? made$/, '3pm').replace(/^3-?pointers made$/, '3pm')
-    .replace(/\brebs\b/g, 'reb').replace(/\basts\b/g, 'ast').replace(/\bstls\b/g, 'stl').replace(/\bblks\b/g, 'blk')
+    .replace(/\brebs\b/g, 'reb').replace(/\bass?ts\b\.?/g, 'ast').replace(/\bstls\b/g, 'stl').replace(/\bblks\b/g, 'blk')
     .replace(/^blk\+stl$/, 'stl+blk').replace(/\s+/g, ' ');
 }
 const team = (t: string | null) => (t ? TEAM_ALIASES[t.trim().toUpperCase()] ?? t.trim().toUpperCase() : null);
