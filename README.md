@@ -15,7 +15,7 @@ a leaderboard ranked by profit, injury notes and the health of each data feed.
 
 | Area | Details |
 |---|---|
-| **Discord** | `/pick` (inline `legs:` or a multi-line form), `/rate` (score a parlay without saving it), `/slips`, `/slip`, `/live`, `/board`, `/leaderboard`, `/dashboard` (link and today's key, shown only to you), `/reveal`, `/delete`. Admin commands: `/poster`, `/settle`, `/rotatekey`. The bot posts in the channel when a slip cashes or loses. |
+| **Discord** | `/pick` (inline `legs:` or a multi-line form), `/rate` (score a parlay without saving it), `/edge` (same leg text, scored from the Edge Engine board, nothing saved), `/slips`, `/slip`, `/live`, `/board`, `/leaderboard`, `/dashboard` (link and today's key, shown only to you), `/reveal`, `/delete`. Admin commands: `/poster`, `/settle`, `/rotatekey`. The bot posts in the channel when a slip cashes or loses. |
 | **Pick entry** | Plain text, matched to real games and ESPN athlete IDs: `Jokic o10.5 reb`, `Tatum 30+ pts (+150)`, `Giannis pra u45.5`, `Josh Allen o245.5 pass yds`, `Josh Jacobs anytime td +110`, `McDavid 1+ sog`, `GB -3.5`, `CAR/GB u47.5`, `GB ML -180`. You can add a league prefix (`NBA:`) or a team hint (`Name (TEAM)`). College props need the team hint. If a name is ambiguous, nothing is saved and you get a suggestion instead of a guess. |
 | **Grading** | Legs grade when the game ends. Overs cash, and unders bust, as soon as the line is passed. Whole-number lines can push. A DNP or a postponed game voids the leg. Parlays re-price when a leg pushes or voids. If the price can't be known, the slip goes to **review** (`/settle`) so the bot never invents a number. NFL players missing from the box score also go to review, because ESPN leaves out players with zero stats. |
 | **Hidden picks** | `/pick hidden:true`. The legs are removed server-side in one place (`src/views.ts`) and never reach any API, SSE message, injury lookup or error text. The channel only sees "🔒 hidden 3-leg slip". The legs are revealed by `/reveal`, or automatically when the slip settles so the record stays honest. |
@@ -33,7 +33,7 @@ npm install
 cp .env.example .env          # set APP_SECRET; DEMO_MODE=1 to preview
 npm run demo                  # or: npm start
 # open http://localhost:8080 — the key is in data/demo-access-key.txt (demo) or: npm run key
-npm test                      # 85 tests: parser, box scores, grading, settlement, parlay rating, hidden-pick leaks, auth, HTTP
+npm test                      # 148 tests: parser, box scores, grading, settlement, parlay rating, Edge board matching, hidden-pick leaks, auth, HTTP
 npm run screenshots           # BASE=http://localhost:8080; needs Chrome (CHROME_PATH)
 ```
 
@@ -83,6 +83,11 @@ curl -X POST $URL/api/admin/import -H "authorization: Bearer $ADMIN_TOKEN" -H 'c
 | `TIER_LADDER` | | Free Member < Moneyline < VIP < Deluxe < Lifetime | `id:Label` pairs, lowest first. A pick's default tier is `free`, so existing slips stay public. |
 | `STAFF_ROLE_NAMES` | | Admin, Moderator, Analyst Mods, Support | These roles see every tier. The bot does not create or edit roles. |
 | `WEEK_START` | | `monday` | `monday` or `sunday`, in `GROUP_TZ`, for the weekly record. |
+| `EDGE_EMAIL` | for `/edge` | | Edge Engine login. With `EDGE_PASSWORD`, the bot signs in on its own. Either one unset = `/edge` stays off. Never logged. |
+| `EDGE_PASSWORD` | for `/edge` | | Edge Engine password. Never logged or committed. |
+| `EDGE_CHANNEL_IDS` | | | Comma-separated channel IDs. Slip screenshots here are rated from Edge and are **not** added to the board. |
+| `EDGE_CACHE_TTL_MIN` | | `12` | How long a fetched Edge board stays fresh, in minutes. A new fetch also waits at least one minute. |
+| `EDGE_ORIGIN` | | `https://edge-engine.up.railway.app` | Board host. Override only if the site moves. |
 
 ## Create the Discord bot and invite it
 
@@ -139,6 +144,8 @@ src/
   parse.ts      free-text leg parser
   resolve.ts    match legs to real games / ESPN athlete IDs
   rate.ts       parlay rating (pure scoring + ESPN fetch)
+  edgerate.ts   match a slip to an Edge board and score it (no I/O)
+  edgeengine.ts Edge login, board fetch, in-memory cache
   grading.ts    pure grading, pace and settlement logic
   engine.ts     polling loop: grade, settle, auto-reveal, emit events
   store.ts      slip create/reveal/delete/poster/manual settle
@@ -193,6 +200,43 @@ Each leg is `7/10 · Jokic o10.5 reb — hit 8/10, avg 12.4, margin +1.9 vs DAL`
 * **Parlay.** Each leg score is read as a probability out of 10 and the scores are multiplied, then scaled back to 1–10. One leg is unchanged. A weak leg dominates. Unscored legs are excluded, and the lowest scored leg is flagged.
 
 If `XAI_API_KEY` is set, a 2–3 sentence note is added from those numbers only. No key, or a failed call, just omits the note. The key is never logged. Line-movement history is not part of this. The dashboard slip page does not rate legs.
+
+## Edge Engine ratings
+
+`/edge legs:` uses the same text as `/pick` (`Maxey o26.5 pts+reb; Jokic u12.5 reb`) and replies only to you. Nothing is saved. It needs `EDGE_EMAIL` and `EDGE_PASSWORD`. If either is unset, the command says Edge is off and still shows the ESPN `/rate` score.
+
+Two other ways to ask, once those variables are set:
+
+* A slip screenshot posted in a channel listed in `EDGE_CHANNEL_IDS` is rated in the channel and is **not** logged to the board.
+* A 📊 reaction on a slip screenshot the bot already reads (a watched slip channel, or any channel when `DISCORD_SLIP_CHANNEL_IDS` is blank) gets the same rating as a reply. The slip is not logged by the reaction.
+
+Reading a screenshot still needs `XAI_API_KEY` and the Message Content intent. `GuildMessageReactions` is not a privileged intent. If the portal rejects Message Content, screenshots and reactions turn off and `/edge` text keeps working.
+
+Each prop leg is matched to the current Edge board:
+
+* Names are compared with case, accents, periods and Jr/Sr/II/III/IV removed. `Maxey` matches `Tyrese Maxey`. A shared last name needs a team (`Smith (HOU)`) or the ESPN resolver's team.
+* Edge labels such as `Pts + Reb` and `Rush + Rec Yards` map onto the same stat codes as `/pick`.
+* **Same line.** The reply shows Edge's percent for the side you took, the sim projection, grade, and (when that side is the one Edge featured) EV and the book's odds.
+* **Different line**, including a demon or goblin. The reply shows Edge's line, how far yours is from it, and the sim's cushion against your line. Edge's percent is quoted only as the percent for Edge's line. It is not used as your hit chance, and it is left out of the parlay product.
+* **No row.** `Not on Edge's board`, plus that leg's ESPN `/rate` score.
+
+The slip line is the product of the same-line percents, labeled as assuming independence, with how many legs matched, the average grade (A=3, B=2, C=1), and the weakest same-line leg. The ESPN `/rate` number is a second opinion under that.
+
+The board is cached in memory. It refreshes when it is older than `EDGE_CACHE_TTL_MIN` (default 12, so about every 10–15 minutes) and when a rating asks for a stale copy. Two refreshes will not start within the same minute. If login or the board fails, the last good copy is kept and the reply says `Edge data as of <time CT>`.
+
+### How the board is fetched
+
+Edge's public login page posts `{email, password}` to `POST /auth/login` and stores the returned token in `localStorage` and a `ee_sess` cookie. API calls accept `X-EE-Token` and `Authorization: Bearer`. `/app` redirects to the marketing page without a valid session. The numbers on the board (projection, grade, EV, over/under percent) are computed in the page from the raw odds feed, not returned as finished props.
+
+The bot therefore:
+
+1. Logs in with `POST /auth/login`. The password is sent only in that body and is never logged. Errors have any session token stripped.
+2. Requests `/app` with the token. If the HTML already contains live `.brow` cards, those are parsed. The marketing page's "fixed snapshot" is ignored.
+3. Otherwise it opens headless Chromium, sets the session cookie, loads `/app`, clicks **FETCH LIVE**, and reads the rendered cards (player, team, market, line, sim, minutes, games, odds, EV, over/under percent, grade). It also clicks each league tab and up to 40 "+ N lines" controls so an alternate line can match a demon or goblin exactly.
+
+Chromium is started for that refresh and closed when it finishes. The cached rows are small. The refresh itself is not: the app downloads a large odds payload (on the order of 30 MB for NBA) and runs its simulation in the page. On Render's free instance (512 MB) that spike can run the process out of memory. A 2 GB instance is the comfortable size if a refresh kills the service. The image is larger because it contains Playwright's Chromium build. This change does not deploy and does not change the Render plan.
+
+What could not be checked without the owner's Edge login: the live `/app` DOM (the parser is tested against the same card markup the public marketing page uses), whether **FETCH LIVE** is a button with that text, and whether "+ N lines" expands into more `.brow` cards or only a detail panel. If a refresh comes back empty, the previous board is kept and the log says the board rendered no cards.
 
 ## Accuracy notes and limits
 

@@ -1,16 +1,18 @@
 // Discord bot. Starts only when DISCORD_BOT_TOKEN is set; the web app never depends on it.
 import {
-  ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events, GatewayIntentBits, ModalBuilder, PermissionFlagsBits,
-  SlashCommandBuilder, TextInputBuilder, TextInputStyle, type ButtonInteraction, type ChatInputCommandInteraction, type Interaction, type Message, type ModalSubmitInteraction,
+  ActionRowBuilder, ButtonBuilder, ButtonStyle, Client, EmbedBuilder, Events, GatewayIntentBits, ModalBuilder, Partials, PermissionFlagsBits,
+  SlashCommandBuilder, TextInputBuilder, TextInputStyle, type ButtonInteraction, type ChatInputCommandInteraction, type Interaction, type Message, type MessageReaction, type ModalSubmitInteraction, type PartialMessageReaction, type PartialUser, type User,
 } from 'discord.js';
-import { confirmDraft, deleteDraft, draftCard, draftLegLines, editDefaults, editDraft, getDraft, purgeDrafts, readPhoto, type Draft } from './photoslips.ts';
-import { VisionError, type XaiOpts } from './slipvision.ts';
+import { confirmDraft, deleteDraft, draftCard, draftLegLines, draftsForMessage, editDefaults, editDraft, getDraft, purgeDrafts, readPhoto, type Draft } from './photoslips.ts';
+import { extractSlips, normalizeRead, VisionError, type XaiOpts } from './slipvision.ts';
+import { edgeLinesFromExtraction, formatEdgeAsOf, formatEdgeReport, queryFromLeg, rateEdgeLegs } from './edgerate.ts';
+import type { EdgeCache } from './edgeengine.ts';
 import type { APIEmbed } from 'discord.js';
 import { getSlip } from './db.ts';
 import type { Auth } from './auth.ts';
 import { getLegs, type Leg, type Slip } from './db.ts';
 import type { Engine, SettledEvent } from './engine.ts';
-import { ParseError, splitLegs } from './parse.ts';
+import { ParseError, parseLeg, splitLegs } from './parse.ts';
 import { ratePasted, rateSlip, ratingDescription, type ParlayRating } from './rate.ts';
 import type { Resolver, ResolvedLeg } from './resolve.ts';
 import { createSlip, deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
@@ -39,6 +41,8 @@ export const commands = [
       ...parseLadder(config.tierLadder).slice(0, 25).map((t) => ({ name: t.label, value: t.id })),
     )),
   new SlashCommandBuilder().setName('rate').setDescription('Rate a parlay 1-10. Same syntax as /pick; nothing is saved.')
+    .addStringOption((o) => o.setName('legs').setDescription('Same leg syntax as /pick, separated with ; or newlines').setRequired(true)),
+  new SlashCommandBuilder().setName('edge').setDescription('Rate a slip from Edge Engine. Same syntax as /pick; nothing is saved.')
     .addStringOption((o) => o.setName('legs').setDescription('Same leg syntax as /pick, separated with ; or newlines').setRequired(true)),
   new SlashCommandBuilder().setName('slips').setDescription('Open slips')
     .addUserOption((o) => o.setName('user').setDescription('Only this member')),
@@ -105,6 +109,12 @@ export interface BotDeps {
   slipChannelIds?: string[];
   /** Staff channels: screenshots there become test slips, kept out of standings. */
   staffChannelIds?: string[];
+  /** Edge board cache. null = EDGE_EMAIL / EDGE_PASSWORD unset. */
+  edge?: EdgeCache | null;
+  /** Screenshots in these channels are Edge-rated and are not added to the board. */
+  edgeChannelIds?: string[];
+  /** Set false after a privileged-intent rejection so /edge text still works. */
+  edgeReactions?: boolean;
   /** Tier ladder and staff role names. Defaults match Free < Moneyline < VIP < Deluxe < Lifetime. */
   ladder?: TierDef[];
   staffRoles?: string[];
@@ -145,9 +155,12 @@ export async function fetchSlipImage(client: MessageFetchClient | null | undefin
 const MAX_IMAGES_PER_MESSAGE = 4;
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024;
 
-/** Intents the bot needs. Reading screenshots needs message events + the privileged Message Content intent. */
-export function botIntents(visionOn: boolean): GatewayIntentBits[] {
-  return visionOn ? [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent] : [GatewayIntentBits.Guilds];
+/** Intents the bot needs. Screenshots need Message Content. Edge reactions also need message reactions. */
+export function botIntents(visionOn: boolean, edgeOn = false): GatewayIntentBits[] {
+  const intents = [GatewayIntentBits.Guilds];
+  if (visionOn || edgeOn) intents.push(GatewayIntentBits.GuildMessages, GatewayIntentBits.MessageContent);
+  if (edgeOn) intents.push(GatewayIntentBits.GuildMessageReactions);
+  return intents;
 }
 
 /** Ticket embed for a logged slip (pure data, so it is tested without Discord). Everything comes from slipView/ticket(). */
@@ -205,7 +218,12 @@ export class Bot {
   async start(): Promise<void> {
     if (!this.d.token) return;
     this.status = { status: 'connecting', detail: 'logging in to Discord…', tag: null };
-    const client = new Client({ intents: botIntents(!!this.d.vision) });
+    const reactions = !!this.d.edge && this.d.edgeReactions !== false;
+    const messages = !!this.d.vision || reactions;
+    const client = new Client({
+      intents: botIntents(messages, reactions),
+      partials: reactions ? [Partials.Channel, Partials.Message, Partials.Reaction] : [],
+    });
     this.client = client;
     client.once(Events.ClientReady, async (c) => {
       this.status = { status: 'ok', detail: `connected as ${c.user.tag} · ${c.guilds.cache.size} server(s)`, tag: c.user.tag };
@@ -219,9 +237,13 @@ export class Bot {
       this.flushLayup();
     });
     client.on(Events.InteractionCreate, (i) => this.onInteraction(i).catch((e) => console.error('[bot] interaction error', e)));
-    if (this.d.vision) {
+    if (this.d.vision || reactions) {
       client.on(Events.MessageCreate, (m) => this.onMessage(m).catch((e) => console.error('[bot] screenshot import error', e)));
-      console.log(`[bot] slip screenshots: on (${this.d.slipChannelIds?.length ? this.d.slipChannelIds.length + ' channel(s)' : 'any channel'})`);
+      if (this.d.vision) console.log(`[bot] slip screenshots: on (${this.d.slipChannelIds?.length ? this.d.slipChannelIds.length + ' channel(s)' : 'any channel'})`);
+    }
+    if (reactions) {
+      client.on(Events.MessageReactionAdd, (r, u) => this.onEdgeReaction(r, u).catch((e) => console.error('[edge] reaction', (e as Error).message)));
+      console.log(`[bot] edge ratings: on (${this.d.edgeChannelIds?.length ? this.d.edgeChannelIds.length + ' rate-only channel(s)' : 'reactions + /edge'})`);
     }
     client.on(Events.ShardDisconnect, () => { this.status = { ...this.status, status: 'down', detail: 'disconnected from gateway, reconnecting' }; });
     client.on(Events.ShardResume, () => { this.status = { ...this.status, status: 'ok', detail: `connected as ${this.status.tag}` }; });
@@ -234,10 +256,10 @@ export class Bot {
     try { await client.login(this.d.token); }
     catch (e) {
       // Message Content is a privileged intent: if it isn't enabled in the Developer Portal, keep the bot up without screenshots.
-      if (this.d.vision && /disallowed intents/i.test((e as Error).message)) {
-        console.warn('[bot] Message Content intent not enabled in the Discord Developer Portal — slip screenshots disabled; slash commands still work.');
+      if ((this.d.vision || reactions) && /disallowed intents/i.test((e as Error).message)) {
+        console.warn('[bot] Message Content intent not enabled in the Discord Developer Portal — slip screenshots and Edge reactions disabled; slash commands still work.');
         await client.destroy().catch(() => {});
-        this.d = { ...this.d, vision: null };
+        this.d = { ...this.d, vision: null, edgeReactions: false };
         return this.start();
       }
       this.status = { status: 'down', detail: `login failed: ${(e as Error).message}`, tag: null }; console.error('[bot] login failed:', (e as Error).message); }
@@ -266,6 +288,7 @@ export class Bot {
       switch (i.commandName) {
         case 'pick': return await this.cmdPick(i);
         case 'rate': return await this.cmdRate(i);
+        case 'edge': return await this.cmdEdge(i);
         case 'slips': return await this.cmdSlips(i);
         case 'slip': return await this.cmdSlip(i);
         case 'live': return await this.cmdLive(i);
@@ -366,6 +389,134 @@ export class Bot {
     await this.replyRating(i, () => ratePasted(this.d.ctx.espn, (line) => this.resolveForRating(line), lines, this.d.vision));
   }
 
+  private async cmdEdge(i: ChatInputCommandInteraction) {
+    const text = i.options.getString('legs', true);
+    const lines = splitLegs(text);
+    if (!lines.length) throw new ParseError('Give at least one leg, same syntax as /pick.');
+    await this.replyEdge(i, lines);
+  }
+
+  private async queriesFor(lines: string[]) {
+    const out = [];
+    for (const line of lines) {
+      let parsed;
+      try { parsed = parseLeg(line); }
+      catch {
+        out.push({ raw: line, kind: 'other' as const, player: null, names: [], team: null, league: null, statText: null, side: null, line: null });
+        continue;
+      }
+      let resolved: { player?: string | null; team?: string | null; league?: string | null; stat?: string | null } | null = null;
+      if (parsed.type === 'prop') {
+        try { resolved = await this.resolveForRating(line); } catch { resolved = null; }
+      }
+      out.push(queryFromLeg(parsed, resolved));
+    }
+    return out;
+  }
+
+  private async edgeEmbedFor(lines: string[]): Promise<EmbedBuilder> {
+    const espn = await ratePasted(this.d.ctx.espn, (line) => this.resolveForRating(line), lines, this.d.vision);
+    if (!this.d.edge) {
+      return new EmbedBuilder().setColor(BRAND).setTitle('Edge rating').setDescription(
+        ['Edge ratings are off (EDGE_EMAIL and EDGE_PASSWORD are not set). Nothing was saved.', '', ratingDescription(espn)].join('\n').slice(0, 4000),
+      ).setFooter({ text: 'Nothing saved' });
+    }
+    const snap = await this.d.edge.get();
+    let asOf = snap.board ? formatEdgeAsOf(snap.board.fetchedAt, this.d.ctx.tz) : null;
+    if (snap.board && snap.stale && snap.error) asOf = `${asOf} · refresh failed, showing the last board`;
+    if (!snap.board) asOf = `Edge board isn't available${snap.error ? ` (${snap.error})` : ''}`;
+    const rated = rateEdgeLegs(await this.queriesFor(lines), snap.board?.props ?? [], {
+      espnLegs: espn.legs.map((l) => ({ score: l.score, reason: l.reason })),
+      espn: { overall: espn.overall, weakest: espn.weakest },
+      asOf,
+    });
+    const title = rated.combinedPct == null ? 'Edge rating' : `Edge rating · ${rated.combinedPct}% combined`;
+    return new EmbedBuilder().setColor(BRAND).setTitle(title).setDescription(formatEdgeReport(rated) || '—')
+      .setFooter({ text: 'Nothing saved · Edge percents assume independent legs' });
+  }
+
+  private async replyEdge(i: ButtonInteraction | ChatInputCommandInteraction, lines: string[]) {
+    try {
+      if (!i.deferred && !i.replied) await i.deferReply({ ephemeral: true });
+      const payload = { embeds: [await this.edgeEmbedFor(lines)] };
+      if (i.deferred || i.replied) await i.editReply(payload);
+      else await i.reply({ ...payload, ephemeral: true });
+    } catch (e) {
+      const msg = e instanceof ParseError || e instanceof SlipError ? e.message : 'Could not rate that on Edge.';
+      if (!(e instanceof ParseError || e instanceof SlipError)) console.error('[edge] rate', (e as Error).message);
+      if (i.deferred || i.replied) await i.editReply({ content: `⚠️ ${msg}`, embeds: [] });
+      else await i.reply({ ephemeral: true, content: `⚠️ ${msg}` });
+    }
+  }
+
+  /** True when this channel is one the bot already reads, or an Edge rate-only channel. */
+  private edgeWatches(m: { channelId: string; channel?: { parentId?: string | null } | null }): boolean {
+    const parent = m.channel?.parentId ?? null;
+    const listed = (ids: string[] | undefined) => !!ids?.length && (ids.includes(m.channelId) || (!!parent && ids.includes(parent)));
+    if (listed(this.d.edgeChannelIds)) return true;
+    if (!this.d.slipChannelIds?.length) return true;
+    return listed(this.d.slipChannelIds);
+  }
+
+  /** Rate a slip image from Edge. Does not write a draft or a slip. */
+  private async rateEdgeImages(m: Message) {
+    const atts = [...m.attachments.values()].filter((a) => (a.contentType ?? '').startsWith('image/') || /\.(heic|heif)$/i.test(a.name ?? '')).slice(0, MAX_IMAGES_PER_MESSAGE);
+    if (!atts.length) return;
+    await (m.channel as { sendTyping?: () => Promise<unknown> }).sendTyping?.().catch(() => {});
+    if (!this.d.vision) {
+      await m.reply({ content: 'Edge can rate a screenshot once XAI_API_KEY is set. Nothing was saved.', allowedMentions: { repliedUser: false } }).catch(() => {});
+      return;
+    }
+    for (const a of atts) {
+      const mime = (a.contentType ?? (/\.(heic|heif)$/i.test(a.name ?? '') ? 'image/heic' : '')).split(';')[0]!;
+      if (a.size > MAX_IMAGE_BYTES) continue;
+      if (!/^image\/(png|jpe?g)$/.test(mime)) {
+        if (/heic|heif/i.test(mime)) await m.reply({ content: UNSUPPORTED_REPLY(mime), allowedMentions: { repliedUser: false } }).catch(() => {});
+        continue;
+      }
+      let image: Uint8Array;
+      try {
+        const r = await fetch(a.url, { signal: AbortSignal.timeout(30_000) });
+        if (!r.ok) throw new Error(`attachment HTTP ${r.status}`);
+        image = new Uint8Array(await r.arrayBuffer());
+      } catch (e) { console.error('[edge] attachment fetch failed', (e as Error).message); continue; }
+      try {
+        const read = await extractSlips(image, mime, this.d.vision);
+        const n = normalizeRead(read.read);
+        if (n.notSlip || !n.slips.length) continue;
+        for (const slip of n.slips) {
+          const lines = edgeLinesFromExtraction(slip);
+          if (!lines.length) continue;
+          const embed = await this.edgeEmbedFor(lines);
+          await m.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch((e) => console.error('[edge] reply', (e as Error).message));
+        }
+      } catch (e) {
+        console.error('[edge] screenshot', (e as Error).message);
+        await m.reply({ content: 'Could not read that slip for Edge. Nothing was saved.', allowedMentions: { repliedUser: false } }).catch(() => {});
+      }
+    }
+  }
+
+  private async onEdgeReaction(reaction: MessageReaction | PartialMessageReaction, user: User | PartialUser) {
+    if (!this.d.edge || this.d.edgeReactions === false) return;
+    if (reaction.emoji.name !== '📊') return;
+    try {
+      if (user.partial) user = await user.fetch();
+      if (user.bot) return;
+      if (reaction.partial) await reaction.fetch();
+      const msg = reaction.message.partial ? await reaction.message.fetch() : reaction.message;
+      if (!msg.inGuild() || msg.author?.bot) return;
+      if (!this.edgeWatches(msg)) return;
+      const drafted = draftsForMessage(this.d.ctx, msg.id).flatMap((d) => draftLegLines(d)).filter(Boolean);
+      if (drafted.length) {
+        const embed = await this.edgeEmbedFor(drafted);
+        await msg.reply({ embeds: [embed], allowedMentions: { repliedUser: false } }).catch((e) => console.error('[edge] reply', (e as Error).message));
+        return;
+      }
+      await this.rateEdgeImages(msg);
+    } catch (e) { console.error('[edge] reaction', (e as Error).message); }
+  }
+
   private async onRateSlip(i: ButtonInteraction) {
     const id = i.customId.slice('rate:'.length);
     const s = slipWithLegs(this.d.ctx.db, id);
@@ -409,7 +560,12 @@ export class Bot {
   }
 
   private async onMessage(m: Message) {
-    if (m.author.bot || !m.inGuild() || !this.d.vision) return;
+    if (m.author.bot || !m.inGuild()) return;
+    if (this.d.edge && this.d.edgeReactions !== false && this.inList(m, this.d.edgeChannelIds)) {
+      await this.rateEdgeImages(m);
+      return;
+    }
+    if (!this.d.vision) return;
     const isStaff = this.inList(m, this.d.staffChannelIds);
     const watched = isStaff || this.inList(m, this.d.slipChannelIds);
     if (this.d.slipChannelIds?.length && !watched) return;

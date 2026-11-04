@@ -39,6 +39,14 @@ export const config = {
   xaiModel: env.XAI_MODEL || '',
   staffChannelIds: (env.DISCORD_STAFF_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   slipChannelIds: (env.DISCORD_SLIP_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  /** Edge Engine login. Both must be set or /edge stays off. Never log these. */
+  edgeEmail: env.EDGE_EMAIL || '',
+  edgePassword: env.EDGE_PASSWORD || '',
+  /** Screenshots here are rated from Edge and are not added to the board. */
+  edgeChannelIds: (env.EDGE_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
+  /** Minutes to keep a board before refreshing. Default 12 (the 10–15 min window). */
+  edgeCacheTtlMin: Number(env.EDGE_CACHE_TTL_MIN || 12) >= 1 ? Number(env.EDGE_CACHE_TTL_MIN || 12) : 12,
+  edgeOrigin: (env.EDGE_ORIGIN || 'https://edge-engine.up.railway.app').replace(/\/$/, ''),
   pollLiveMs: Number(env.POLL_LIVE_MS || 15000),
   pollIdleMs: Number(env.POLL_IDLE_MS || 60000),
   // Optional Postgres (e.g. Neon) URL: when set, the SQLite DB is snapshotted there and restored on boot. Never logged.
