@@ -249,7 +249,10 @@ export function checkSlip(x: Extraction): { blocking: string[]; flags: string[] 
   if (x.stake == null) blocking.push('stake');
   else if (x.stake > 1000) blocking.push('stake over 1000');
   if (x.status === 'unknown') blocking.push('result (won/lost/push/void/open)');
-  if (x.status === 'won' && (x.payout == null || x.payout <= (x.stake ?? 0))) blocking.push('payout (needed for a win)');
+  // PrizePicks labels a Flex partial (some legs missed) as "Win" even when it pays back less than the stake.
+  const flexPartial = x.status === 'won' && /flex/i.test(x.play_type ?? '') && x.stake != null && x.payout != null && x.payout > 0 && x.payout < x.stake;
+  if (x.status === 'won' && !flexPartial && (x.payout == null || x.payout <= (x.stake ?? 0))) blocking.push('payout (needed for a win)');
+  else if (flexPartial) flags.push(`Payout below stake — logs as a win with a net of -$${round2(x.stake! - x.payout!).toFixed(2)} (Flex partial)`);
   if (!x.legs.length) blocking.push('legs');
   x.legs.forEach((l, i) => { const m = legMissing(x, l); if (m.length) blocking.push(`leg ${i + 1}: ${m.join(', ')}`); });
   const known = !!x.platform && KNOWN_PLATFORMS.some((p) => p.toLowerCase() === x.platform!.toLowerCase());

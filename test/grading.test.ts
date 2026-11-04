@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { gradeLeg, paceFor, settleSlip, toWin } from '../src/grading.ts';
+import { consistencyProblems, gradeLeg, paceFor, settleSlip, toWin } from '../src/grading.ts';
 import { gameFromSummary, elapsedFraction, type Game } from '../src/espn.ts';
 import { parseBox } from '../src/stats.ts';
 import { fx, leg } from './helpers.ts';
@@ -98,4 +98,15 @@ test('settle: parlay math, losses, pushes re-price, review when unknowable', () 
 
 test('settle: slip price beats leg product when all legs stand (SGP pricing)', () => {
   assert.equal(settleSlip({ stake: 1, odds: 200 }, [{ status: 'won', odds: -110 }, { status: 'won', odds: -110 }]).profit, 2);
+});
+
+test('consistency: a Flex partial win may net less than zero; other wins still need a positive net', () => {
+  const mixed = [{ status: 'won' as const }, { status: 'lost' as const }];
+  assert.deepEqual(consistencyProblems({ status: 'won', profit: -3, play_type: '5-Pick Flex Play' }, mixed), []);
+  assert.deepEqual(consistencyProblems({ status: 'won', profit: -0.5, play_type: 'flex' }, mixed), []);
+  assert.deepEqual(consistencyProblems({ status: 'won', profit: 10, play_type: 'Flex Play' }, [{ status: 'won' }]), []);
+  assert.ok(consistencyProblems({ status: 'won', profit: -3, play_type: '3-Pick Power Play' }, mixed).includes('a win must have a positive net'));
+  assert.ok(consistencyProblems({ status: 'won', profit: 0, play_type: 'Flex Play' }, mixed).includes('a win must have a positive net'));
+  assert.ok(consistencyProblems({ status: 'won', profit: null, play_type: 'Flex Play' }, mixed).includes('a win must have a positive net'));
+  assert.ok(consistencyProblems({ status: 'won', profit: -3, play_type: 'Flex Play' }, [{ status: 'lost' }]).some((s) => /0\/1 legs hit/.test(s)));
 });

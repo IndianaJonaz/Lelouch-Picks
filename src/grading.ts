@@ -136,7 +136,7 @@ export function toWin(slip: Pick<Slip, 'stake' | 'odds'>, legs: Pick<Leg, 'odds'
   return null;
 }
 
-/** Problems that would make a settled slip contradict its own legs (e.g. "WIN" with 0 hits, or a negative net on a win). */
+/** Problems that would make a settled slip contradict its own legs (e.g. "WIN" with 0 hits, or a negative net on a non-flex win). */
 export function consistencyProblems(slip: Pick<Slip, 'status' | 'profit' | 'play_type'>, legs: Pick<Leg, 'status'>[]): string[] {
   const p: string[] = [];
   const won = legs.filter((l) => l.status === 'won').length;
@@ -144,7 +144,8 @@ export function consistencyProblems(slip: Pick<Slip, 'status' | 'profit' | 'play
   const pending = legs.filter((l) => l.status === 'pending').length;
   const flex = /flex/i.test(slip.play_type ?? '');
   if (slip.status === 'won') {
-    if (!(slip.profit != null && slip.profit > 0)) p.push('a win must have a positive net');
+    // PrizePicks Flex partial hits are labelled "Win" even when they pay back less than the stake.
+    if (!(slip.profit != null && (slip.profit > 0 || (flex && slip.profit < 0)))) p.push('a win must have a positive net');
     if (!won) p.push(`marked won but 0/${legs.length} legs hit`);
     if (lost && !flex) p.push(`marked won but ${lost} leg(s) missed on a non-flex play`);
   }
