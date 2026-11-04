@@ -46,6 +46,8 @@ export const config = {
   edgeChannelIds: (env.EDGE_CHANNEL_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   /** Minutes to keep a board before refreshing. Default 12 (the 10–15 min window). */
   edgeCacheTtlMin: Number(env.EDGE_CACHE_TTL_MIN || 12) >= 1 ? Number(env.EDGE_CACHE_TTL_MIN || 12) : 12,
+  /** Optional The Odds API key for /edge consensus (free tier 500 credits/month). Blank = off. Never logged. */
+  oddsApiKey: env.ODDS_API_KEY || '',
   edgeOrigin: (env.EDGE_ORIGIN || 'https://edge-engine.up.railway.app').replace(/\/$/, ''),
   pollLiveMs: Number(env.POLL_LIVE_MS || 15000),
   pollIdleMs: Number(env.POLL_IDLE_MS || 60000),
