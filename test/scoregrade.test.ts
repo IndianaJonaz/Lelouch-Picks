@@ -1,7 +1,7 @@
 // Scoreboard grading: match a pending leg to one final game, or leave it pending.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { applyScoreboardGrade, matchLeg } from '../src/scoregrade.ts';
+import { applyScoreboardGrade, matchLeg, type Match } from '../src/scoregrade.ts';
 import { claimGradePost, releaseGradePost } from '../src/layup.ts';
 import { createSlip } from '../src/store.ts';
 import { getLegs, getSlip } from '../src/db.ts';
@@ -12,7 +12,7 @@ const side = (abbr: string, score: number | null): TeamSide => ({
   id: abbr, abbr, name: abbr, short: abbr, location: abbr, score, logo: null, color: null, record: null,
 });
 
-function game(p: Partial<Game> & { id: string; home: string; away: string; hs?: number | null; as?: number | null }): Game {
+function game(p: Partial<Omit<Game, 'home' | 'away'>> & { id: string; home: string; away: string; hs?: number | null; as?: number | null }): Game {
   const { home, away, hs, as, ...rest } = p;
   return {
     league: 'nba', name: `${away} at ${home}`, shortName: `${away} @ ${home}`, start: '2026-10-28T23:00:00Z',
@@ -25,6 +25,11 @@ function game(p: Partial<Game> & { id: string; home: string; away: string; hs?: 
 
 const spread = (p: object) => leg({ type: 'spread', team: 'MIA', line: -5.5, event_id: null, event_name: 'BOS @ MIA', start_time: '2026-10-28T23:00:00Z', ...p });
 
+function expectMiss(m: Match, reason: 'none' | 'ambiguous' | 'not-final') {
+  if (m.ok) assert.fail(`expected ${reason}, matched ${m.game.id}`);
+  assert.equal(m.reason, reason);
+}
+
 test('exact event id on a final game is a confident match and grades the spread', () => {
   const g = game({ id: '401', home: 'MIA', away: 'BOS', hs: 110, as: 100 });
   const live = game({ id: '401', home: 'MIA', away: 'BOS', state: 'in', completed: false, statusName: 'STATUS_IN_PROGRESS' });
@@ -34,21 +39,21 @@ test('exact event id on a final game is a confident match and grades the spread'
   assert.equal(applyScoreboardGrade(spread({ event_id: '401', line: -10 }), [g]).status, 'push');
   // Not final yet: leave the leg pending. Do not post a result.
   assert.equal(applyScoreboardGrade(spread({ event_id: '401' }), [live]).status, 'pending');
-  assert.equal(matchLeg(spread({ event_id: '401' }), [live]).reason, 'not-final');
+  expectMiss(matchLeg(spread({ event_id: '401' }), [live]), 'not-final');
 });
 
 test('no match and ambiguous matches stay pending — the grader does not guess a game', () => {
   const mia = game({ id: '1', home: 'MIA', away: 'BOS' });
   const mia2 = game({ id: '2', home: 'MIA', away: 'NYK', start: '2026-10-28T23:30:00Z' });
   const phi = spread({ team: 'PHI', event_name: 'PHI @ NYK' });
-  assert.equal(matchLeg(phi, [mia]).reason, 'none');
+  expectMiss(matchLeg(phi, [mia]), 'none');
   assert.equal(applyScoreboardGrade(phi, [mia]).status, 'pending');
   // Team only, on two finals, with nothing that picks a side: ambiguous.
   const amb = spread({ event_id: null, event_name: null, team: 'MIA' });
-  assert.equal(matchLeg(amb, [mia, mia2]).reason, 'ambiguous');
+  expectMiss(matchLeg(amb, [mia, mia2]), 'ambiguous');
   assert.equal(applyScoreboardGrade(amb, [mia, mia2]).status, 'pending');
   // An event id that is not on the board does not fall through to a team guess.
-  assert.equal(matchLeg(spread({ event_id: 'missing', team: 'MIA' }), [mia]).reason, 'none');
+  expectMiss(matchLeg(spread({ event_id: 'missing', team: 'MIA' }), [mia]), 'none');
 });
 
 test('props are not graded from the scoreboard alone', () => {
@@ -68,7 +73,7 @@ test('grading the same final twice does not change a settled leg', () => {
 
 test('engine: scoreboard grades a final spread once; an unmatched team stays pending', async () => {
   const { db, engine } = makeCtx({ 'nba/scoreboard?dates=20261028': fx('nba_scoreboard_final'), 'nba/scoreboard?dates=20261027': { events: [] } });
-  const base = { league: 'nba', event_name: 'MIA @ ATL', start_time: '2026-10-28T23:00:00.000Z', player: null, athlete_id: null, stat: null, side: null as const, odds: -110 };
+  const base = { league: 'nba', event_name: 'MIA @ ATL', start_time: '2026-10-28T23:00:00.000Z', player: null, athlete_id: null, stat: null, side: null, odds: -110 };
   const hit = createSlip(db, { user_id: 'u', user_name: 'U', stake: 1, odds: -110 }, [
     { ...base, event_id: '401909881', type: 'spread', team: 'MIA', line: -11.5, raw: 'MIA -11.5' },
   ]);
