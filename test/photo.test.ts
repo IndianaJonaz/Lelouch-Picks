@@ -210,6 +210,63 @@ test('edit fills blanks; bad input is rejected with a readable message', async (
   ctx.engine.stop();
 });
 
+test('flex partial: a win that pays back less than the stake can be confirmed with that payout', async () => {
+  const flex = slip({
+    play_type: '5-Pick Flex Play', stake: 5, payout: 2, odds_text: null, pick_count: 2,
+    legs: [
+      L({ player: 'Giannis Antetokounmpo', team: 'MIA', line: 25.5, direction: 'under', stat: 'Points', actual: 24, leg_result: 'won' }),
+      L({ player: 'Bam Adebayo', team: 'MIA', line: 30.5, direction: 'over', stat: 'Points', actual: 24, leg_result: 'lost' }),
+    ],
+  });
+  const readFlex = normalizeSlip(flex);
+  const checked = checkSlip(readFlex);
+  assert.equal(checked.blocking.includes('payout (needed for a win)'), false);
+  assert.ok(checked.flags.some((f) => f === 'Payout below stake — logs as a win with a net of -$3.00 (Flex partial)'));
+  assert.deepEqual(toImport(readFlex).result, { status: 'won', profit: -3 });
+  assert.equal(toImport(readFlex).payout, 2);
+  assert.equal(toImport(readFlex).book, 'PrizePicks');
+  assert.equal(toImport(readFlex).playType, '5-Pick Flex Play');
+
+  const half = checkSlip(normalizeSlip(slip({ play_type: 'Flex Play', stake: 1, payout: 0.5 })));
+  assert.equal(half.blocking.includes('payout (needed for a win)'), false);
+  assert.ok(half.flags.some((f) => f === 'Payout below stake — logs as a win with a net of -$0.50 (Flex partial)'));
+
+  // Missing or zero payout is still not a win. Paying the stake back is a push, not a win.
+  assert.ok(checkSlip(normalizeSlip(slip({ play_type: 'Flex Play', payout: null }))).blocking.includes('payout (needed for a win)'));
+  assert.ok(checkSlip(normalizeSlip(slip({ play_type: 'Flex Play', stake: 5, payout: 0 }))).blocking.includes('payout (needed for a win)'));
+  assert.ok(checkSlip(normalizeSlip(slip({ play_type: 'Flex Play', stake: 5, payout: 5 }))).blocking.includes('payout (needed for a win)'));
+  assert.equal(checkSlip(normalizeSlip(slip({ play_type: 'Flex Play', stake: 5, payout: 5 }))).flags.some((f) => /below stake/i.test(f)), false);
+  // A power play that paid less than the stake is still a bad read, not a Flex partial.
+  assert.ok(checkSlip(normalizeSlip(slip({ play_type: '3-Pick Power Play', stake: 5, payout: 2 }))).blocking.includes('payout (needed for a win)'));
+
+  const { ctx, espn } = makeCtx(routes);
+  const rd = await readPhoto(ctx, mockXai([read(flex)]).v, { ...who, image: IMG, now: NOW });
+  assert.ok(rd.kind === 'drafts');
+  if (rd.kind !== 'drafts') return;
+  const card = draftCard(rd.drafts[0]);
+  assert.equal(card.canConfirm, true);
+  assert.match(card.text, /Payout below stake — logs as a win with a net of -\$3\.00 \(Flex partial\)/);
+  assert.doesNotMatch(card.text, /Fill in before confirming: payout/);
+  // Edit re-submits the same 5 / 2 the photo already showed. Confirm stays enabled.
+  const edited = editDraft(ctx, rd.drafts[0].id, { stakePayout: '5 / 2', result: 'won' });
+  assert.equal(draftCard(edited).canConfirm, true);
+  assert.equal(edited.x.stake, 5);
+  assert.equal(edited.x.payout, 2);
+
+  const out = await confirmDraft(ctx, new Resolver(espn), rd.drafts[0].id, NOW);
+  assert.equal(out.kind, 'added', JSON.stringify(out));
+  if (out.kind !== 'added') return;
+  assert.deepEqual(out.problems, []);
+  assert.deepEqual(
+    [out.slip.status, out.slip.profit, out.slip.book, out.slip.play_type, out.slip.payout, out.slip.stake, out.slip.source_url],
+    ['won', -3, 'PrizePicks', '5-Pick Flex Play', 2, 5, who.sourceUrl],
+  );
+  assert.deepEqual(out.legs.map((l) => l.status), ['won', 'lost']);
+  const row = leaderboard(ctx, 'all').find((u) => u.userId === who.userId)!;
+  assert.deepEqual([row.w, row.l, row.profit], [1, 0, -3]);
+  ctx.engine.stop();
+});
+
 test('consistency: a "win" that ESPN says missed is parked for review, never shown as WIN with a miss', async () => {
   const { ctx, espn } = makeCtx(routes);
   const bad = slip({ pick_count: 1, payout: 110, legs: [L({ player: 'Bam Adebayo', team: 'MIA', line: 30.5, direction: 'over', stat: 'Points', leg_result: 'won' })] });
