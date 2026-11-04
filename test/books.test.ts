@@ -15,7 +15,7 @@ const box = parseBox('nba', nba);
 const giannis = { athlete_id: '3032977', player: 'Giannis Antetokounmpo', team: 'MIA' };
 const pre = { ...final, state: 'pre' as const, completed: false, statusName: 'STATUS_SCHEDULED' };
 
-const graded = (p: object) => ({ ...gradeLeg(leg(p), final, box), odds: (p as { odds?: number | null }).odds ?? null });
+const graded = (p: object, g = final) => ({ ...gradeLeg(leg(p), g, box), odds: (p as { odds?: number | null }).odds ?? null });
 const slip = (book: string, extra: object = {}) => ({ stake: 1, odds: null as number | null, book, play_type: null as string | null, payout: null as number | null, ...extra });
 
 test('gradeSource recognises PrizePicks, the PricePicks spelling, DraftKings, and Kalshi', () => {
@@ -68,7 +68,7 @@ test('PrizePicks power play: all legs hit cashes, one miss loses, a push pushes,
   assert.equal(afterDnp.status, 'won');
   assert.equal(afterDnp.profit, 0.91);
 
-  const waiting = gradeLeg(leg({ ...giannis, stat: 'pts', side: 'over', line: 22.5 }), pre, box);
+  const waiting = graded({ ...giannis, stat: 'pts', side: 'over', line: 22.5 }, pre);
   assert.equal(settleForBook(pp, [waiting, over]).status, 'open');
   assert.equal(settleForBook(pp, [waiting, over]).profit, null);
 });
@@ -111,7 +111,7 @@ test('DraftKings: parlay needs every remaining leg, push and void drop out, a si
   assert.deepEqual(settleForBook(dk, [push]), { status: 'push', profit: 0, detail: null });
   assert.equal(settleForBook(dk, [miss]).status, 'lost');
   assert.equal(settleForBook(dk, [dnp]).status, 'void');
-  const waiting = gradeLeg(leg({ ...giannis, stat: 'pts', side: 'over', line: 22.5 }), pre, box);
+  const waiting = graded({ ...giannis, stat: 'pts', side: 'over', line: 22.5 }, pre);
   assert.equal(settleForBook(dk, [waiting]).status, 'open');
 });
 

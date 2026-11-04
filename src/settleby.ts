@@ -57,7 +57,10 @@ export function backfillSettleBy(db: DatabaseSync): number {
   for (const s of rows) {
     const at = computeSettleBy(getLegs(db, s.id), s.book);
     if (!at) continue;
-    n += upd.run(at, s.id).changes;
+    // node:sqlite types changes as number | bigint. This process never enables
+    // readBigInts, so the count is a number; Number() only matters if that flips.
+    const changes = upd.run(at, s.id).changes;
+    n += typeof changes === 'bigint' ? Number(changes) : changes;
   }
   return n;
 }
