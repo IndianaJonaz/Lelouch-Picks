@@ -33,7 +33,7 @@ npm install
 cp .env.example .env          # set APP_SECRET; DEMO_MODE=1 to preview
 npm run demo                  # or: npm start
 # open http://localhost:8080 — the key is in data/demo-access-key.txt (demo) or: npm run key
-npm test                      # 166 tests: parser, box scores, grading, settlement, parlay rating, Edge board matching, hidden-pick leaks, auth, HTTP
+npm test                      # 168 tests: parser, box scores, grading, settlement, parlay rating, Edge board matching, hidden-pick leaks, auth, HTTP
 npm run screenshots           # BASE=http://localhost:8080; needs Chrome (CHROME_PATH)
 ```
 
@@ -231,7 +231,7 @@ Each `/edge` leg gets three separate 1–10 ratings, then a slip summary:
 | **ESPN** | ESPN public game log | Last-10 hit rate × 10, ±1.5 for the season-average cushion (same as `/rate`). |
 | **Consensus** | Public betting markets | `round(10 × mean probability)` across the sources that price your line: **DraftKings via ESPN's public odds API** (two-way line de-vigged; otherwise the `N+` alt line, vig included), **Kalshi** (mid of a ≤15¢ bid/ask on the matching `N+` market, NBA only), and **The Odds API** when `ODDS_API_KEY` is set (mean no-vig across books). |
 
-A source with no price says `n/a`; nothing is estimated. ⚠️ follows any rating of 4/10 or lower, and a leg whose ratings average 4 or lower starts with ⚠️. The slip line shows each source's average over the legs it rated, the combined hit chance from the market and Edge probabilities (independent legs), and every leg with a rating of 4 or lower.
+A source with no price says `n/a`; nothing is estimated. ⚠️ follows any rating of 4/10 or lower and ✅ follows any rating of 7/10 or higher. A leg starts with ⚠️ when its available ratings average 4 or lower (weak), with ✅ when they average 7 or higher and none is 4 or lower (strong), and with nothing in between. The slip summary shows each source's average over the legs it rated, the combined hit chance from the market and Edge probabilities (independent legs), a **Strong legs** line, and a **Caution** line listing every leg with a rating of 4 or lower.
 
 All consensus fetches are plain HTTPS JSON (no browser) with a 6 s request timeout, a 9 s per-leg budget, a 5-minute cache of compact parsed rows (64 entries max), at most two ESPN prop pages parsed at once, and Kalshi requests sent one at a time with one retry after HTTP 429.
 

@@ -4,7 +4,7 @@ import {
   ConsensusFeed, combineSources, espnPropProbability, implied, kalshiEventFor, kalshiProbability, kalshiRows, oddsApiProbability,
   probToScore, propRowsFromEspn, type PropRow,
 } from '../src/consensus.ts';
-import { buildTriple, edgeScore, formatTripleReport, isWeakLeg, WEAK_MAX } from '../src/tripleview.ts';
+import { buildTriple, edgeScore, formatTripleReport, isStrongLeg, isWeakLeg, legEmoji, STRONG_MIN, WEAK_MAX } from '../src/tripleview.ts';
 import { rateEdgeSlip, tripleLabel } from '../src/edgeslip.ts';
 import type { EdgeLegRating, EdgeProp } from '../src/edgerate.ts';
 import { fakeEspn, leg } from './helpers.ts';
@@ -249,4 +249,32 @@ test('feed: Kalshi failing twice never leaves an unhandled rejection', async () 
     await new Promise((res) => setTimeout(res, 50));
     assert.deepEqual(seen, []);
   } finally { process.off('unhandledRejection', onUnhandled); }
+});
+
+test('strong legs: ✅ when avg ≥7 and no rating ≤4; ✅ after each rating ≥7; in-between gets nothing', () => {
+  const sameLine = (pct: number): EdgeLegRating => ({ ...miss('x'), status: 'same_line', edgePct: pct, grade: 'A' });
+  const cons = (score: number) => ({ score, p: score / 10, sources: [], note: `${score * 10}%` });
+  const legs = buildTriple(
+    ['Strong o1.5 PTS', 'Mixed o2.5 AST', 'Middle o3.5 REB', 'NoEdge o4.5 REB'],
+    [sameLine(80), sameLine(90), sameLine(60), miss('d')],
+    [{ label: 'a', score: 7, reason: 'r' }, { label: 'b', score: 9, reason: 'r' }, { label: 'c', score: 6, reason: 'r' }, { label: 'd', score: 8, reason: 'r' }],
+    [cons(7), cons(4), cons(5), cons(7)],
+  );
+  assert.equal(STRONG_MIN, 7);
+  assert.deepEqual(legs.map(legEmoji), ['✅', '', '', '✅']);
+  assert.equal(isStrongLeg(legs[1]!), false, 'avg 7.3 but Consensus 4 is weak');
+  assert.equal(isWeakLeg(legs[1]!), false);
+  const text = formatTripleReport(legs);
+  assert.match(text, /^1\. ✅ \*\*Strong o1\.5 PTS\*\* — Edge 8\/10 ✅ · ESPN 7\/10 ✅ · Consensus 7\/10 ✅$/m);
+  assert.match(text, /^2\. \*\*Mixed o2\.5 AST\*\* — Edge 9\/10 ✅ · ESPN 9\/10 ✅ · Consensus 4\/10 ⚠️$/m);
+  assert.match(text, /^3\. \*\*Middle o3\.5 REB\*\* — Edge 6\/10 · ESPN 6\/10 · Consensus 5\/10$/m);
+  assert.match(text, /^4\. ✅ \*\*NoEdge o4\.5 REB\*\* — Edge n\/a · ESPN 8\/10 ✅ · Consensus 7\/10 ✅$/m);
+  assert.match(text, /✅ Strong legs \(avg ≥7, none ≤4\): Strong o1\.5 PTS, NoEdge o4\.5 REB/);
+  assert.match(text, /⚠️ Caution \(a rating ≤4\/10\): Mixed o2\.5 AST/);
+  assert.match(text, /✅ = strong \(rating ≥7; leg avg ≥7, none ≤4\) · ⚠️ = weak \(rating ≤4; leg avg ≤4\)/);
+});
+
+test('no strong legs says so', () => {
+  const legs = buildTriple(['A o1.5 PTS'], [miss('a')], [{ label: 'a', score: 5, reason: 'r' }], [{ score: 5, p: 0.5, sources: [], note: '' }]);
+  assert.match(formatTripleReport(legs), /^Strong legs: none$/m);
 });
