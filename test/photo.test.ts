@@ -5,7 +5,7 @@ import { GatewayIntentBits } from 'discord.js';
 import { Resolver } from '../src/resolve.ts';
 import { confirmDraft, deleteDraft, draftCard, editDefaults, editDraft, getDraft, readPhoto } from '../src/photoslips.ts';
 import { checkSlip, extractSlips, normalizeSlip, normStat, parseMatchupScores, toImport, XAI_URL } from '../src/slipvision.ts';
-import { botIntents, ticketEmbed } from '../src/bot.ts';
+import { botIntents, ticketEmbed, wonAmount, wonSlipEmbed, wonSlipMessage } from '../src/bot.ts';
 import { deleteSlip } from '../src/store.ts';
 import { leaderboard, slipView, ticket } from '../src/views.ts';
 import { fx, makeCtx as mk } from './helpers.ts';
@@ -165,13 +165,23 @@ test('confirm: legs graded from ESPN first, then the slip result; poster\'s row;
   assert.equal((v as any).sourceUrl, undefined); // original screenshot link is not in the public view
   assert.ok(!JSON.stringify(v).includes(who.sourceUrl));
   const e = ticketEmbed(v, 'https://x.test', 'America/Chicago');
-  assert.equal(e.title, `$55.00 → $330.00   ·   #${s.id}`);
-  assert.match(e.description!, /\*\*PRIZEPICKS\*\*  `POWER PLAY`/);
-  assert.match(e.description!, /NBA \/ LOL · 3 legs · \*\*3\/3 HIT\*\*/);
-  assert.match(e.description!, /\*\*SETTLED · CASHED\*\* · net \$275\.00/);
-  assert.match(e.description!, /Giannis Antetokounmpo under 25\.5 Points — \*\*24\*\*/);
-  assert.match(e.footer!.text, /^logged by Lelouch · .+ CT$/);
-  assert.equal(e.url, `https://x.test/slip/${s.id}`);
+  assert.equal(e.description, 'Won $330.00');
+  assert.equal(e.color, 0xd4af37);
+  assert.equal(e.title, undefined);
+  assert.equal(e.author, undefined);
+  assert.equal(e.footer, undefined);
+  assert.equal(e.fields, undefined);
+  assert.equal(e.image, undefined);
+  assert.equal(e.url, undefined);
+  assert.equal(e.thumbnail, undefined);
+  assert.equal(JSON.stringify(e).includes('Giannis'), false);
+  assert.equal(JSON.stringify(e).includes('PrizePicks'), false);
+  const shot = 'https://cdn.discordapp.com/attachments/1/2/slip.png';
+  const pictured = ticketEmbed(v, 'https://x.test', 'America/Chicago', shot);
+  assert.equal(pictured.description, 'Won $330.00');
+  assert.deepEqual(pictured.image, { url: shot });
+  assert.equal(pictured.title, undefined);
+  assert.equal(pictured.footer, undefined);
 
   // same image again: caught by image hash before any model call
   const before = x.calls.length;
@@ -207,6 +217,13 @@ test('edit fills blanks; bad input is rejected with a readable message', async (
   assert.equal(d.x.legs[0].matchup, 'MIA 129 vs ATL 117'); // carried over from the read
   const out = await confirmDraft(ctx, new Resolver(espn), id, NOW);
   assert.ok(out.kind === 'added' && out.slip.status === 'lost' && out.slip.profit === -20 && out.legs[0].status === 'lost');
+  if (out.kind === 'added') {
+    const lost = ticketEmbed(slipView(out.slip, out.legs, ctx), 'https://x.test', 'America/Chicago');
+    assert.match(lost.title ?? '', /\$20\.00 → \$0\.00/);
+    assert.match(lost.description ?? '', /Bam Adebayo over 30\.5 Points/);
+    assert.match(lost.footer?.text ?? '', /^logged by Lelouch/);
+    assert.equal(lost.image, undefined);
+  }
   ctx.engine.stop();
 });
 
@@ -262,6 +279,8 @@ test('flex partial: a win that pays back less than the stake can be confirmed wi
     ['won', -3, 'PrizePicks', '5-Pick Flex Play', 2, 5, who.sourceUrl],
   );
   assert.deepEqual(out.legs.map((l) => l.status), ['won', 'lost']);
+  assert.equal(wonAmount(out.slip), 2);
+  assert.equal(ticketEmbed(slipView(out.slip, out.legs, ctx), 'https://x.test', 'America/Chicago').description, 'Won $2.00');
   const row = leaderboard(ctx, 'all').find((u) => u.userId === who.userId)!;
   assert.deepEqual([row.w, row.l, row.profit], [1, 0, -3]);
   ctx.engine.stop();
@@ -315,8 +334,38 @@ test('open slip: legs land on the upcoming game and stay pending for live gradin
   if (out.kind === 'added') {
     assert.deepEqual([out.slip.status, out.legs[0].status, out.legs[0].event_id, out.slip.odds], ['open', 'pending', 'PRE1', 500]);
     assert.equal(ticket(out.slip, out.legs).statusLine, 'OPEN');
+    const openEmbed = ticketEmbed(slipView(out.slip, out.legs, ctx), 'https://x.test', 'America/Chicago');
+    assert.match(openEmbed.title ?? '', /\$55\.00 → \$330\.00/);
+    assert.match(openEmbed.description ?? '', /Giannis Antetokounmpo under 25\.5 Points/);
+    assert.match(openEmbed.footer?.text ?? '', /logged by Lelouch/);
   }
   ctx.engine.stop();
+});
+
+test('won slip post is the screenshot and the payout, nothing else', () => {
+  assert.equal(wonAmount({ payout: 330, stake: 55, profit: 275 }), 330);
+  assert.equal(wonAmount({ payout: null, stake: 10, profit: 15 }), 25);
+  assert.equal(wonAmount({ payout: null, stake: 10, profit: null }), null);
+  const bare = wonSlipEmbed(330);
+  assert.deepEqual(bare, { color: 0xd4af37, description: 'Won $330.00' });
+  const img = 'https://cdn.discordapp.com/attachments/9/8/slip.jpg?ex=1';
+  const withImg = wonSlipEmbed(12.5, img);
+  assert.equal(withImg.description, 'Won $12.50');
+  assert.deepEqual(withImg.image, { url: img });
+  assert.equal(withImg.title, undefined);
+  assert.equal(withImg.author, undefined);
+  assert.equal(withImg.footer, undefined);
+  assert.equal(withImg.fields, undefined);
+  assert.equal(withImg.thumbnail, undefined);
+  assert.equal(withImg.url, undefined);
+  assert.equal(wonSlipEmbed(null).description, 'Won');
+  assert.equal(wonSlipEmbed(10, 'not a url').image, undefined);
+  const msg = wonSlipMessage(40, img);
+  assert.equal(msg.content, '');
+  assert.deepEqual(msg.components, []);
+  assert.equal(msg.embeds.length, 1);
+  assert.equal(msg.embeds[0].description, 'Won $40.00');
+  assert.deepEqual(msg.embeds[0].image, { url: img });
 });
 
 test('bot intents: message intents only when screenshot reading is on', () => {

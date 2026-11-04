@@ -16,11 +16,11 @@ import { ParseError, parseLeg, splitLegs } from './parse.ts';
 import { ratePasted, rateSlip, ratingDescription, type ParlayRating } from './rate.ts';
 import type { Resolver, ResolvedLeg } from './resolve.ts';
 import { createSlip, deleteSlip, isPublic, manualSettle, revealSlip, setPoster, SlipError, slipWithLegs } from './store.ts';
-import { addDays, dayInTz, fmtOdds } from './util.ts';
+import { addDays, dayInTz, fmtOdds, round2 } from './util.ts';
 import { config } from './config.ts';
 import { claimGradePost, ensureFeedCursor, layupChannelId, listUnposted, releaseGradePost } from './layup.ts';
 import { canSeePick, parseLadder, parseStaff, viewerFromRoles, type TierDef, type Viewer } from './tiers.ts';
-import { boardView, leaderboard, legText, liveView, slipView, type Ctx } from './views.ts';
+import { boardView, leaderboard, legText, liveView, slipImageRef, slipView, type Ctx } from './views.ts';
 
 const BRAND = 0xc8102e; // Geass theme: Britannia crimson
 const WON = 0xd4af37; // imperial gold
@@ -28,6 +28,36 @@ const LOST = 0x8b0000; // deep blood crimson
 const ICON: Record<string, string> = { pending: '⏳', won: '✅', lost: '❌', push: '➖', void: '⚪', review: '🔎', open: '🟣' };
 export const units = (n: number | null | undefined) => (n == null ? '—' : `$${Number(n).toFixed(2)}`);
 const bar = (pct: number | null, width = 10) => { const n = Math.round(Math.max(0, Math.min(1, pct ?? 0)) * width); return '▰'.repeat(n) + '▱'.repeat(width - n); };
+
+/**
+ * Dollars a won slip paid out. The logged payout wins; otherwise stake + profit
+ * (the same total the ticket calls "pays").
+ */
+export function wonAmount(slip: { payout?: number | null; stake?: number | null; profit?: number | null }): number | null {
+  if (slip.payout != null && Number.isFinite(slip.payout)) return round2(slip.payout);
+  if (slip.stake != null && slip.profit != null && Number.isFinite(slip.stake) && Number.isFinite(slip.profit)) return round2(slip.stake + slip.profit);
+  return null;
+}
+
+/** "Won $330.00", or "Won" when the payout was never recorded. */
+export function wonLine(amount: number | null | undefined): string {
+  return amount == null ? 'Won' : `Won ${units(amount)}`;
+}
+
+/**
+ * Discord embed for a cashed slip: the payout line, and the screenshot when we have a URL.
+ * No legs, odds, author, footer, fields, or link.
+ */
+export function wonSlipEmbed(amount: number | null, imageUrl?: string | null): APIEmbed {
+  const embed: APIEmbed = { color: WON, description: wonLine(amount) };
+  if (imageUrl && /^https:\/\//.test(imageUrl) && imageUrl.length <= 2048) embed.image = { url: imageUrl };
+  return embed;
+}
+
+/** Won-slip post: that embed only. Empty content and no buttons. */
+export function wonSlipMessage(amount: number | null, imageUrl?: string | null): { content: string; embeds: APIEmbed[]; components: [] } {
+  return { content: '', embeds: [wonSlipEmbed(amount, imageUrl)], components: [] };
+}
 
 export const commands = [
   new SlashCommandBuilder().setName('pick').setDescription('Post a slip (leave legs empty to open a multi-line form)')
@@ -163,13 +193,18 @@ export function botIntents(visionOn: boolean, edgeOn = false): GatewayIntentBits
   return intents;
 }
 
-/** Ticket embed for a logged slip (pure data, so it is tested without Discord). Everything comes from slipView/ticket(). */
-export function ticketEmbed(v: ReturnType<typeof slipView>, publicUrl: string, tz: string): APIEmbed {
+/**
+ * Ticket embed for a logged slip (pure data, so it is tested without Discord).
+ * Won slips are only the payout line and, when imageUrl is set, the screenshot.
+ * Losses, open slips, and reviews keep the full ticket.
+ */
+export function ticketEmbed(v: ReturnType<typeof slipView>, publicUrl: string, tz: string, imageUrl?: string | null): APIEmbed {
   const t = v.ticket;
   if (!t) return { color: BRAND, title: `🔒 Hidden slip · #${v.id}` };
+  if (v.status === 'won') return wonSlipEmbed(t.pays, imageUrl);
   const net = t.net == null ? '' : ` · net ${units(t.net)}`;
   const badge = [t.book ? `**${t.book.toUpperCase()}**` : null, t.playBadge ? `\`${t.playBadge}\`` : null, t.isTest ? '`TEST`' : null].filter(Boolean).join('  ');
-  const color = v.status === 'won' ? WON : v.status === 'lost' ? LOST : v.status === 'review' ? 0xf59e0b : v.status === 'open' ? BRAND : 0x94a3b8;
+  const color = v.status === 'lost' ? LOST : v.status === 'review' ? 0xf59e0b : v.status === 'open' ? BRAND : 0x94a3b8;
   const rows = v.legs.map((l) => `${ICON[l.status] ?? '•'} ${l.ticketText}${l.actual != null ? ` — **${l.actual}**` : ''} · _${l.statusWord}_`);
   const logged = new Intl.DateTimeFormat('en-US', { timeZone: tz, weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(v.createdAt.endsWith('Z') ? v.createdAt : v.createdAt + 'Z'));
   return {
@@ -631,6 +666,9 @@ export class Bot {
     if (out.kind === 'duplicate') return i.editReply({ content: `Already logged as \`${out.slipId}\`.`, components: [] });
     const v = slipView(out.slip, out.legs, this.d.ctx);
     this.d.engine.emit('tick', { changed: [out.slip.id] });
+    if (out.slip.status === 'won') {
+      return i.editReply(wonSlipMessage(wonAmount(out.slip), await this.wonImageUrl(out.slip)));
+    }
     const warn = out.problems.length ? `⚠️ Parked for review — ${out.problems.join('; ')}. An admin can fix it with /settle.` : '';
     return i.editReply({
       content: [`✅ Logged \`${out.slip.id}\`${out.unresolved ? ` · ${out.unresolved} leg(s) aren't on ESPN, so their results come from the slip` : ''}`, warn].filter(Boolean).join('\n'),
@@ -741,8 +779,33 @@ export class Bot {
     if (!this.client?.isReady() || !e.slip.channel_id || e.slip.is_demo) return;
     const ch = await this.client.channels.fetch(e.slip.channel_id).catch(() => null);
     if (!ch || !('send' in ch)) return;
-    const head = e.slip.status === 'won' ? '💰 Cashed' : e.slip.status === 'lost' ? '💀 Lost' : '➖ Settled';
+    if (e.slip.status === 'won') {
+      await this.sendWonSlip(ch, e.slip);
+      return;
+    }
+    const head = e.slip.status === 'lost' ? '💀 Lost' : '➖ Settled';
     await (ch as any).send({ embeds: [this.slipEmbed(e.slip, getLegs(this.d.ctx.db, e.slip.id), head)] });
+  }
+
+  /** Fresh Discord CDN URL for a public slip screenshot, or null when there isn't one. */
+  private async wonImageUrl(slip: Slip): Promise<string | null> {
+    if (!isPublic(slip)) return null;
+    const ref = slipImageRef(slip);
+    if (!ref) return null;
+    const img = await fetchSlipImage(this.client, ref.channelId, ref.messageId);
+    return img?.url ?? null;
+  }
+
+  /** Post a won slip. If Discord rejects the screenshot URL, post the payout line on its own. */
+  private async sendWonSlip(ch: { send: (payload: any) => Promise<unknown> }, slip: Slip) {
+    const amount = wonAmount(slip);
+    const imageUrl = await this.wonImageUrl(slip);
+    try {
+      await ch.send(wonSlipMessage(amount, imageUrl));
+    } catch (err) {
+      if (!imageUrl) throw err;
+      await ch.send(wonSlipMessage(amount, null));
+    }
   }
 
   private async resolveLayup(): Promise<string | null> {
@@ -778,8 +841,13 @@ export class Bot {
         const full = slipWithLegs(this.d.ctx.db, id);
         if (!full || !['won', 'lost', 'push'].includes(full.slip.status)) continue;
         if (!claimGradePost(this.d.ctx.db, id, full.slip.status)) continue;
+        if (full.slip.status === 'won') {
+          try { await this.sendWonSlip(ch, full.slip); }
+          catch { releaseGradePost(this.d.ctx.db, id); break; }
+          continue;
+        }
         const book = full.slip.book ? `${full.slip.book} · ` : '';
-        const head = full.slip.status === 'won' ? '💰 Cashed' : full.slip.status === 'lost' ? '💀 Lost' : '➖ Push';
+        const head = full.slip.status === 'lost' ? '💀 Lost' : '➖ Push';
         const flex = /flex/i.test(full.slip.play_type ?? '');
         const hits = full.legs.filter((l) => l.status === 'won').length;
         const denom = full.legs.filter((l) => l.status !== 'void').length || full.legs.length;
