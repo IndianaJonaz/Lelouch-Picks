@@ -33,7 +33,7 @@ npm install
 cp .env.example .env          # set APP_SECRET; DEMO_MODE=1 to preview
 npm run demo                  # or: npm start
 # open http://localhost:8080 — the key is in data/demo-access-key.txt (demo) or: npm run key
-npm test                      # 148 tests: parser, box scores, grading, settlement, parlay rating, Edge board matching, hidden-pick leaks, auth, HTTP
+npm test                      # 168 tests: parser, box scores, grading, settlement, parlay rating, Edge board matching, hidden-pick leaks, auth, HTTP
 npm run screenshots           # BASE=http://localhost:8080; needs Chrome (CHROME_PATH)
 ```
 
@@ -88,6 +88,7 @@ curl -X POST $URL/api/admin/import -H "authorization: Bearer $ADMIN_TOKEN" -H 'c
 | `EDGE_CHANNEL_IDS` | | | Comma-separated channel IDs. Slip screenshots here are rated from Edge and are **not** added to the board. |
 | `EDGE_CACHE_TTL_MIN` | | `12` | How long a fetched Edge board stays fresh, in minutes. A new fetch also waits at least one minute. |
 | `EDGE_ORIGIN` | | `https://edge-engine.up.railway.app` | Board host. Override only if the site moves. |
+| `ODDS_API_KEY` | | | Optional [The Odds API](https://the-odds-api.com) key. Adds every US book's player-prop line to the `/edge` Consensus rating. Free tier is 500 credits a month (1 credit per market per game). Unset = off. Never logged. |
 
 ## Create the Discord bot and invite it
 
@@ -146,6 +147,9 @@ src/
   rate.ts       parlay rating (pure scoring + ESPN fetch)
   edgerate.ts   match a slip to an Edge board and score it (no I/O)
   edgeengine.ts Edge login, board fetch, in-memory cache
+  consensus.ts  market consensus for a prop: DraftKings via ESPN, Kalshi, optional Odds API (cached plain HTTP)
+  tripleview.ts /edge report: Edge, ESPN and Consensus ratings 1–10 with ⚠️ on weak ones (no I/O)
+  edgeslip.ts   /edge pipeline shared by the bot and dry-runs
   grading.ts    pure grading, pace and settlement logic
   engine.ts     polling loop: grade, settle, auto-reveal, emit events
   store.ts      slip create/reveal/delete/poster/manual settle
@@ -211,6 +215,25 @@ Two other ways to ask, once those variables are set:
 * A 📊 reaction on a slip screenshot the bot already reads (a watched slip channel, or any channel when `DISCORD_SLIP_CHANNEL_IDS` is blank) gets the same rating as a reply. The slip is not logged by the reaction.
 
 Reading a screenshot still needs `XAI_API_KEY` and the Message Content intent. `GuildMessageReactions` is not a privileged intent. If the portal rejects Message Content, screenshots and reactions turn off and `/edge` text keeps working.
+
+### Three ratings per leg
+
+Each `/edge` leg gets three separate 1–10 ratings, then a slip summary:
+
+```
+1. ⚠️ **Kyle Kuzma o3.5 AST** — Edge n/a · ESPN 1/10 ⚠️ · Consensus 2/10 ⚠️
+   ↳ Edge: not on Edge's board · ESPN: hit 1/7, avg 2.9, margin -0.6 vs BOS · Mkts: DK alt 4+ +337 → 23% (incl. vig) · Kalshi 4+ 6/20¢ → 13%
+```
+
+| Rating | Source | 1–10 mapping |
+|---|---|---|
+| **Edge** | Edge Engine board | `round(Edge sim % for your side ÷ 10)`, only when Edge has your exact line. Not on the board, a different line, or an ambiguous name is `n/a`. |
+| **ESPN** | ESPN public game log | Last-10 hit rate × 10, ±1.5 for the season-average cushion (same as `/rate`). |
+| **Consensus** | Public betting markets | `round(10 × mean probability)` across the sources that price your line: **DraftKings via ESPN's public odds API** (two-way line de-vigged; otherwise the `N+` alt line, vig included), **Kalshi** (mid of a ≤15¢ bid/ask on the matching `N+` market, NBA only), and **The Odds API** when `ODDS_API_KEY` is set (mean no-vig across books). |
+
+A source with no price says `n/a`; nothing is estimated. ⚠️ follows any rating of 4/10 or lower and ✅ follows any rating of 7/10 or higher. A leg starts with ⚠️ when its available ratings average 4 or lower (weak), with ✅ when they average 7 or higher and none is 4 or lower (strong), and with nothing in between. The slip summary shows each source's average over the legs it rated, the combined hit chance from the market and Edge probabilities (independent legs), a **Strong legs** line, and a **Caution** line listing every leg with a rating of 4 or lower.
+
+All consensus fetches are plain HTTPS JSON (no browser) with a 6 s request timeout, a 9 s per-leg budget, a 5-minute cache of compact parsed rows (64 entries max), at most two ESPN prop pages parsed at once, and Kalshi requests sent one at a time with one retry after HTTP 429.
 
 Each prop leg is matched to the current Edge board:
 

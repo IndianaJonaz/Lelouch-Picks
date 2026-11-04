@@ -5,7 +5,9 @@ import {
 } from 'discord.js';
 import { confirmDraft, deleteDraft, draftCard, draftLegLines, draftsForMessage, editDefaults, editDraft, getDraft, purgeDrafts, readPhoto, type Draft } from './photoslips.ts';
 import { extractSlips, normalizeRead, VisionError, type XaiOpts } from './slipvision.ts';
-import { edgeLinesFromExtraction, formatEdgeAsOf, formatEdgeReport, queryFromLeg, rateEdgeLegs } from './edgerate.ts';
+import { edgeLinesFromExtraction } from './edgerate.ts';
+import { rateEdgeSlip } from './edgeslip.ts';
+import type { ConsensusFeed } from './consensus.ts';
 import type { EdgeCache } from './edgeengine.ts';
 import type { APIEmbed } from 'discord.js';
 import { getSlip } from './db.ts';
@@ -145,6 +147,8 @@ export interface BotDeps {
   edgeChannelIds?: string[];
   /** Set false after a privileged-intent rejection so /edge text still works. */
   edgeReactions?: boolean;
+  /** Market consensus for /edge (DraftKings via ESPN, Kalshi, optional Odds API). null = Consensus shows n/a. */
+  consensus?: ConsensusFeed | null;
   /** Tier ladder and staff role names. Defaults match Free < Moneyline < VIP < Deluxe < Lifetime. */
   ladder?: TierDef[];
   staffRoles?: string[];
@@ -431,43 +435,12 @@ export class Bot {
     await this.replyEdge(i, lines);
   }
 
-  private async queriesFor(lines: string[]) {
-    const out = [];
-    for (const line of lines) {
-      let parsed;
-      try { parsed = parseLeg(line); }
-      catch {
-        out.push({ raw: line, kind: 'other' as const, player: null, names: [], team: null, league: null, statText: null, side: null, line: null });
-        continue;
-      }
-      let resolved: { player?: string | null; team?: string | null; league?: string | null; stat?: string | null } | null = null;
-      if (parsed.type === 'prop') {
-        try { resolved = await this.resolveForRating(line); } catch { resolved = null; }
-      }
-      out.push(queryFromLeg(parsed, resolved));
-    }
-    return out;
-  }
-
   private async edgeEmbedFor(lines: string[]): Promise<EmbedBuilder> {
-    const espn = await ratePasted(this.d.ctx.espn, (line) => this.resolveForRating(line), lines, this.d.vision);
-    if (!this.d.edge) {
-      return new EmbedBuilder().setColor(BRAND).setTitle('Edge rating').setDescription(
-        ['Edge ratings are off (EDGE_EMAIL and EDGE_PASSWORD are not set). Nothing was saved.', '', ratingDescription(espn)].join('\n').slice(0, 4000),
-      ).setFooter({ text: 'Nothing saved' });
-    }
-    const snap = await this.d.edge.get();
-    let asOf = snap.board ? formatEdgeAsOf(snap.board.fetchedAt, this.d.ctx.tz) : null;
-    if (snap.board && snap.stale && snap.error) asOf = `${asOf} · refresh failed, showing the last board`;
-    if (!snap.board) asOf = `Edge board isn't available${snap.error ? ` (${snap.error})` : ''}`;
-    const rated = rateEdgeLegs(await this.queriesFor(lines), snap.board?.props ?? [], {
-      espnLegs: espn.legs.map((l) => ({ score: l.score, reason: l.reason })),
-      espn: { overall: espn.overall, weakest: espn.weakest },
-      asOf,
-    });
-    const title = rated.combinedPct == null ? 'Edge rating' : `Edge rating · ${rated.combinedPct}% combined`;
-    return new EmbedBuilder().setColor(BRAND).setTitle(title).setDescription(formatEdgeReport(rated) || '—')
-      .setFooter({ text: 'Nothing saved · Edge percents assume independent legs' });
+    const r = await rateEdgeSlip({
+      espn: this.d.ctx.espn, resolve: (line) => this.resolveForRating(line), edge: this.d.edge ?? null,
+      consensus: this.d.consensus ?? null, tz: this.d.ctx.tz, vision: this.d.vision,
+    }, lines);
+    return new EmbedBuilder().setColor(BRAND).setTitle(r.title).setDescription(r.description).setFooter({ text: r.footer });
   }
 
   private async replyEdge(i: ButtonInteraction | ChatInputCommandInteraction, lines: string[]) {

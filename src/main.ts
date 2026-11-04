@@ -14,6 +14,7 @@ import { pgSnapshotStore, restoreSnapshot, Snapshotter, type SnapshotStore } fro
 import { ensureFeedCursor } from './layup.ts';
 import { parseLadder, parseStaff } from './tiers.ts';
 import { EdgeCache } from './edgeengine.ts';
+import { ConsensusFeed } from './consensus.ts';
 import { edgeConfigured } from './edgerate.ts';
 
 const GROUP = process.env.GROUP_NAME || 'Lelouch HQ';
@@ -54,12 +55,13 @@ const edge = edgeConfigured(config) ? new EdgeCache({
 }) : null;
 if (edge) console.log(`[edge] ratings on · cache ${config.edgeCacheTtlMin} min`);
 else console.log('[edge] EDGE_EMAIL / EDGE_PASSWORD unset — /edge stays off and nothing is saved');
+console.log(`[edge] consensus: DraftKings via ESPN + Kalshi${config.oddsApiKey ? ' + The Odds API' : ' (ODDS_API_KEY unset — Odds API off)'}`);
 const ladder = parseLadder(config.tierLadder);
 const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, demo: config.demo, ladder, weekStart: config.weekStart, bot: () => bot?.status ?? { status: 'idle', detail: 'not started', tag: null } };
 ensureFeedCursor(db);
 bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP, nickname: config.botNickname,
   vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds,
-  edge, edgeChannelIds: config.edgeChannelIds,
+  edge, edgeChannelIds: config.edgeChannelIds, consensus: new ConsensusFeed({ oddsApiKey: config.oddsApiKey }),
   ladder, staffRoles: parseStaff(config.staffRoleNames), layupChannelId: config.layupFeedChannelId });
 
 const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP, snapshots,
