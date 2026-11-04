@@ -42,6 +42,10 @@ function saveDraft(ctx: Ctx, d: Omit<Draft, 'id' | 'createdAt'>): Draft {
     .run(id, d.userId, d.userName, d.guildId, d.channelId, d.messageId, d.sourceUrl, d.imageKey, d.isTest ? 1 : 0, JSON.stringify(d.x), d.readError);
   return getDraft(ctx, id)!;
 }
+export function draftsForMessage(ctx: Ctx, messageId: string): Draft[] {
+  const rows = ctx.db.prepare('SELECT id FROM photo_drafts WHERE message_id = ? ORDER BY created_at, id').all(messageId) as { id: string }[];
+  return rows.map((r) => getDraft(ctx, r.id)).filter((d): d is Draft => !!d);
+}
 export function getDraft(ctx: Ctx, id: string): Draft | null {
   const r = ctx.db.prepare('SELECT * FROM photo_drafts WHERE id = ?').get(id) as any;
   if (!r) return null;

@@ -13,6 +13,8 @@ import type { Ctx } from './views.ts';
 import { pgSnapshotStore, restoreSnapshot, Snapshotter, type SnapshotStore } from './persist.ts';
 import { ensureFeedCursor } from './layup.ts';
 import { parseLadder, parseStaff } from './tiers.ts';
+import { EdgeCache } from './edgeengine.ts';
+import { edgeConfigured } from './edgerate.ts';
 
 const GROUP = process.env.GROUP_NAME || 'Lelouch HQ';
 // Optional Postgres snapshot persistence (DATABASE_URL). Restore BEFORE opening SQLite.
@@ -47,11 +49,17 @@ const auth = new Auth(db, secret, config.tz);
 const resolver = new Resolver(espn);
 
 let bot: Bot | null = null;
+const edge = edgeConfigured(config) ? new EdgeCache({
+  email: config.edgeEmail, password: config.edgePassword, ttlMs: config.edgeCacheTtlMin * 60_000, origin: config.edgeOrigin,
+}) : null;
+if (edge) console.log(`[edge] ratings on · cache ${config.edgeCacheTtlMin} min`);
+else console.log('[edge] EDGE_EMAIL / EDGE_PASSWORD unset — /edge stays off and nothing is saved');
 const ladder = parseLadder(config.tierLadder);
 const ctx: Ctx = { db, espn, engine, tz: config.tz, leagues: config.leagues, demo: config.demo, ladder, weekStart: config.weekStart, bot: () => bot?.status ?? { status: 'idle', detail: 'not started', tag: null } };
 ensureFeedCursor(db);
 bot = new Bot({ ctx, auth, resolver, engine, token: config.discordToken, guildId: config.discordGuildId, adminRoles: config.discordAdminRoles, publicUrl: config.publicUrl, groupName: GROUP, nickname: config.botNickname,
   vision: config.xaiApiKey ? { apiKey: config.xaiApiKey, model: config.xaiModel || undefined } : null, slipChannelIds: config.slipChannelIds, staffChannelIds: config.staffChannelIds,
+  edge, edgeChannelIds: config.edgeChannelIds,
   ladder, staffRoles: parseStaff(config.staffRoleNames), layupChannelId: config.layupFeedChannelId });
 
 const { server } = createServer({ ctx, auth, resolver, adminToken: config.adminToken, publicUrl: config.publicUrl, groupName: GROUP, snapshots,
@@ -73,6 +81,7 @@ function writeDemoKey() {
     if (!hasDemo(db)) await seedDemo(db, espn, resolver, config.tz).catch((e) => console.error('[demo] seeding failed', e));
   }
   engine.start();
+  edge?.start();
   await bot!.start();
   if (!config.discordToken) console.log('[bot] DISCORD_BOT_TOKEN not set — Discord bot disabled; web dashboard fully functional.');
 })();

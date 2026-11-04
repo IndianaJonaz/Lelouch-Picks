@@ -30,3 +30,14 @@ services:
       # Graded-result channel. Blank = look up a channel named layup-feed.
       - key: LAYUP_FEED_CHANNEL_ID
         sync: false
+      # Edge Engine login. Both must be set or /edge stays off. Never commit the values.
+      - key: EDGE_EMAIL
+        sync: false
+      - key: EDGE_PASSWORD
+        sync: false
+      # Comma-separated channel IDs. Screenshots there are rated and are not added to the board.
+      - key: EDGE_CHANNEL_IDS
+        sync: false
+      # Minutes to keep the Edge board in memory. Default 12 (refresh every 10–15 min).
+      - key: EDGE_CACHE_TTL_MIN
+        value: "12"
